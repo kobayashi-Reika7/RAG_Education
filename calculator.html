@@ -198,17 +198,18 @@
         return;
       }
 
-      // 「=」押下後は数値入力を新規として扱う（前回の結果には連結しない）
+      // 「=」押下後の数値入力：新しい計算行として、前回の結果・演算子を用いて次の計算を開始
       if (displayExpression.endsWith('=')) {
+        if (currentOperator === null) return; // 演算子が無い場合は何もしない
         if (num === '.') {
-          displayExpression = '0.';
+          displayExpression = currentValue + ' ' + toDisplayOperator(currentOperator) + ' 0.';
           currentValue = '0.';
         } else {
-          displayExpression = num === '0' ? '0' : num;
-          currentValue = displayExpression;
+          displayExpression = currentValue + ' ' + toDisplayOperator(currentOperator) + ' ';
+          currentValue = num === '0' ? '0' : num;
+          displayExpression += currentValue;
         }
-        previousValue = null;
-        currentOperator = null;
+        // previousValue は executeEquals で既に結果として設定済み
         updateDisplay();
         return;
       }
@@ -363,10 +364,10 @@
         previousValue = null;
         currentOperator = null;
       } else {
-        // 結果を保持（演算子入力時に被演算数として使用するため）
+        // 結果を被演算数として保持、演算子も保持
+        // 「=」後に数値入力された場合の新しい計算行で使用する
         previousValue = parseFloat(resultStr);
-        // 数値入力時は新規扱いにするため演算子はクリア
-        currentOperator = null;
+        // currentOperator は保持（数値入力時に「前回の演算子」として使う）
       }
 
       updateDisplay();
