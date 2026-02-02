@@ -30,6 +30,44 @@
       font-size: 0.95rem;
     }
     .counter-row span { color: #555; }
+    .counter-row { flex-wrap: wrap; }
+    /* リスト選択：タスクをリストごとに絞り込む */
+    .list-section {
+      margin-bottom: 16px;
+      padding: 12px;
+      background: #fff;
+      border-radius: 6px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    .list-section label { font-size: 0.9rem; color: #555; margin-right: 8px; }
+    .list-section select {
+      padding: 6px 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 0.95rem;
+      margin-right: 8px;
+    }
+    .list-section button {
+      padding: 6px 12px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      margin-right: 4px;
+    }
+    .btn-add-list { background: #e8e8e8; }
+    .btn-add-list:hover { background: #d0d0d0; }
+    .btn-delete-list { background: #f0e0e0; color: #c33; }
+    .btn-delete-list:hover { background: #f0c0c0; }
+    /* 期限切れ・お気に入りの視覚区別 */
+    .task-card.overdue .task-title:not(.edit-mode) { color: #c33; }
+    .task-card.overdue .due-state { color: #c33; font-weight: bold; }
+    .task-card.favorite { border-left: 4px solid #f0c040; }
+    .btn-favorite { background: transparent; border: none; cursor: pointer; font-size: 1.2rem; padding: 0 4px; }
+    .btn-favorite.active { color: #f0c040; }
+    .due-row { margin-bottom: 8px; font-size: 0.9rem; }
+    .due-row input[type="date"] { padding: 4px 8px; border: 1px solid #ccc; border-radius: 4px; margin-right: 8px; }
+    .due-state { color: #555; }
     /* タスク入力フォーム */
     .task-form {
       display: flex;
@@ -146,6 +184,14 @@
   <div class="counter-row" id="counterRow">
     <span id="counterIncomplete">未完了：0件</span>
     <span id="counterCompleted">完了：0件</span>
+    <span id="counterFavorite">お気に入り：0件</span>
+    <span id="counterOverdue">期限切れ：0件</span>
+  </div>
+  <div class="list-section">
+    <label for="listSelect">リスト：</label>
+    <select id="listSelect"></select>
+    <button type="button" id="addListBtn" class="btn-add-list">リスト追加</button>
+    <button type="button" id="deleteListBtn" class="btn-delete-list">リスト削除</button>
   </div>
   <div class="task-form">
     <input type="text" id="taskInput" placeholder="タスクを入力" maxlength="200">
@@ -155,11 +201,17 @@
 
   <script>
     // ===== データ =====
-    // タスク一覧。各要素: { id, title, isCompleted, memo, elapsedSeconds }
+    // タスク一覧。各要素: { id, title, isCompleted, isFavorite, dueDate, listId, memo, elapsedSeconds }
     // elapsedSeconds は表示用のみ（localStorage には保存しない）
     var tasks = [];
     var nextId = 1;
     var STORAGE_KEY = "todo_app_tasks";
+    var STORAGE_KEY_LISTS = "todo_app_lists";
+    // リスト（カテゴリ）。各要素: { listId, listName }
+    var lists = [];
+    var nextListId = 1;
+    var currentListId = 1;
+    var DEFAULT_LIST_ID = 1;
 
     // 現在動いているタイマーのタスクID（同時に1つだけ）
     var runningTimerTaskId = null;
@@ -173,7 +225,33 @@
       return ("0" + m).slice(-2) + ":" + ("0" + s).slice(-2);
     }
 
-    // localStorage から復元（完了状態・メモのみ。タイマー経過は含めない）
+    // リストを localStorage から復元
+    function loadLists() {
+      try {
+        var json = localStorage.getItem(STORAGE_KEY_LISTS);
+        if (json) {
+          lists = JSON.parse(json);
+          var maxLid = 0;
+          for (var i = 0; i < lists.length; i++) {
+            if (lists[i].listId > maxLid) maxLid = lists[i].listId;
+          }
+          nextListId = maxLid + 1;
+        } else {
+          lists = [{ listId: DEFAULT_LIST_ID, listName: "デフォルトリスト" }];
+          nextListId = DEFAULT_LIST_ID + 1;
+        }
+      } catch (e) {
+        lists = [{ listId: DEFAULT_LIST_ID, listName: "デフォルトリスト" }];
+        nextListId = DEFAULT_LIST_ID + 1;
+      }
+    }
+
+    // リストを localStorage に保存
+    function saveLists() {
+      localStorage.setItem(STORAGE_KEY_LISTS, JSON.stringify(lists));
+    }
+
+    // localStorage から復元（完了・メモ・お気に入り・期限・listId を復元。タイマー経過は含めない）
     function loadTasks() {
       try {
         var json = localStorage.getItem(STORAGE_KEY);
@@ -184,6 +262,9 @@
               id: t.id,
               title: t.title,
               isCompleted: t.isCompleted === true,
+              isFavorite: t.isFavorite === true,
+              dueDate: t.dueDate || null,
+              listId: t.listId != null ? t.listId : DEFAULT_LIST_ID,
               memo: t.memo || "",
               elapsedSeconds: 0
             };
@@ -199,10 +280,18 @@
       }
     }
 
-    // localStorage に保存（id, title, isCompleted, memo のみ）
+    // localStorage に保存（id, title, isCompleted, isFavorite, dueDate, listId, memo のみ）
     function saveTasks() {
       var toSave = tasks.map(function (t) {
-        return { id: t.id, title: t.title, isCompleted: t.isCompleted, memo: t.memo };
+        return {
+          id: t.id,
+          title: t.title,
+          isCompleted: t.isCompleted,
+          isFavorite: t.isFavorite,
+          dueDate: t.dueDate,
+          listId: t.listId,
+          memo: t.memo
+        };
       });
       localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
     }
@@ -288,18 +377,108 @@
       }
     }
 
+    // ===== 期限（締切）判定：1機能＝1関数 =====
+    // dueDate が null または "YYYY-MM-DD"。戻り値: "none" | "ok" | "overdue"
+    function getDueDateState(dueDate) {
+      if (dueDate === null || dueDate === "") return "none";
+      var today = new Date();
+      var y = today.getFullYear();
+      var m = ("0" + (today.getMonth() + 1)).slice(-2);
+      var d = ("0" + today.getDate()).slice(-2);
+      var todayStr = y + "-" + m + "-" + d;
+      if (dueDate < todayStr) return "overdue";
+      return "ok";
+    }
+
+    // ===== お気に入り：1機能＝1関数 =====
+    function toggleFavorite(taskId) {
+      var task = getTaskById(taskId);
+      if (task) {
+        task.isFavorite = !task.isFavorite;
+        saveTasks();
+        renderTasks();
+      }
+    }
+
+    // ===== 期限設定：1機能＝1関数 =====
+    function setTaskDueDate(taskId, dateStringOrNull) {
+      var task = getTaskById(taskId);
+      if (task) {
+        task.dueDate = dateStringOrNull || null;
+        saveTasks();
+        renderTasks();
+      }
+    }
+
+    // ===== リスト取得・追加・削除・切り替え =====
+    function getLists() {
+      return lists;
+    }
+
+    function addList(listName) {
+      var name = (listName || "").trim();
+      if (name === "") return;
+      lists.push({ listId: nextListId, listName: name });
+      nextListId += 1;
+      saveLists();
+      currentListId = lists[lists.length - 1].listId;
+      renderListSelect();
+      renderTasks();
+    }
+
+    function deleteList(listId) {
+      if (listId === DEFAULT_LIST_ID) return;
+      for (var i = 0; i < lists.length; i++) {
+        if (lists[i].listId === listId) {
+          lists.splice(i, 1);
+          break;
+        }
+      }
+      for (var j = 0; j < tasks.length; j++) {
+        if (tasks[j].listId === listId) tasks[j].listId = DEFAULT_LIST_ID;
+      }
+      saveLists();
+      saveTasks();
+      if (currentListId === listId) currentListId = DEFAULT_LIST_ID;
+      renderListSelect();
+      renderTasks();
+    }
+
+    function setCurrentList(listId) {
+      currentListId = parseInt(listId, 10);
+      renderTasks();
+    }
+
+    // リスト選択用の select を描画する
+    function renderListSelect() {
+      var select = document.getElementById("listSelect");
+      select.innerHTML = "";
+      for (var i = 0; i < lists.length; i++) {
+        var opt = document.createElement("option");
+        opt.value = lists[i].listId;
+        opt.textContent = lists[i].listName;
+        if (lists[i].listId === currentListId) opt.selected = true;
+        select.appendChild(opt);
+      }
+    }
+
     // ===== タスクの追加・削除・編集・完了 =====
+    // 新規タスクはリストの「一番上」に表示（unshift で先頭に挿入）
     function addTask() {
       var input = document.getElementById("taskInput");
       var title = input.value.trim();
       if (title === "") return;
-      tasks.push({
+      var newTask = {
         id: nextId,
         title: title,
         isCompleted: false,
+        isFavorite: false,
+        dueDate: null,
+        listId: currentListId,
         memo: "",
         elapsedSeconds: 0
-      });
+      };
+      tasks.unshift(newTask);
       nextId += 1;
       input.value = "";
       saveTasks();
@@ -344,35 +523,39 @@
       }
     }
 
-    // ===== カウンター（要件 2.2：関数として分離し、状態変更時に即座に再計算） =====
-    // 未完了数・完了数を配列から算出する（保存せず起動時・状態変更時に再計算）
+    // ===== カウンター（filter + length で算出。保存せず起動時・状態変更時に再計算） =====
     function getTaskCounts() {
-      var incomplete = 0;
-      var completed = 0;
-      for (var i = 0; i < tasks.length; i++) {
-        if (tasks[i].isCompleted) {
-          completed += 1;
-        } else {
-          incomplete += 1;
-        }
-      }
-      return { incomplete: incomplete, completed: completed };
+      var incomplete = tasks.filter(function (t) { return !t.isCompleted; }).length;
+      var completed = tasks.filter(function (t) { return t.isCompleted; }).length;
+      var favorite = tasks.filter(function (t) { return t.isFavorite; }).length;
+      var overdue = tasks.filter(function (t) { return getDueDateState(t.dueDate) === "overdue"; }).length;
+      return { incomplete: incomplete, completed: completed, favorite: favorite, overdue: overdue };
     }
 
     function updateCounterDisplay() {
       var counts = getTaskCounts();
       document.getElementById("counterIncomplete").textContent = "未完了：" + counts.incomplete + "件";
       document.getElementById("counterCompleted").textContent = "完了：" + counts.completed + "件";
+      document.getElementById("counterFavorite").textContent = "お気に入り：" + counts.favorite + "件";
+      document.getElementById("counterOverdue").textContent = "期限切れ：" + counts.overdue + "件";
     }
 
     // ===== 描画 =====
+    // 表示対象：現在選択中のリストに属するタスクのみ
+    function getTasksForCurrentList() {
+      return tasks.filter(function (t) { return t.listId === currentListId; });
+    }
+
     function renderTasks() {
       var listEl = document.getElementById("taskList");
       listEl.innerHTML = "";
-      for (var i = 0; i < tasks.length; i++) {
-        var task = tasks[i];
+      var displayTasks = getTasksForCurrentList();
+      for (var i = 0; i < displayTasks.length; i++) {
+        var task = displayTasks[i];
+        var dueState = getDueDateState(task.dueDate);
         var card = document.createElement("li");
-        card.className = "task-card" + (task.isCompleted ? " completed" : "");
+        card.className = "task-card" + (task.isCompleted ? " completed" : "") +
+          (dueState === "overdue" ? " overdue" : "") + (task.isFavorite ? " favorite" : "");
         card.dataset.taskId = task.id;
 
         // ヘッダー：チェックボックス・タイトル・編集・削除
@@ -410,15 +593,38 @@
             }
           };
         }(task.id, titleSpan));
+        var favBtn = document.createElement("button");
+        favBtn.type = "button";
+        favBtn.className = "btn-favorite" + (task.isFavorite ? " active" : "");
+        favBtn.textContent = task.isFavorite ? "★" : "☆";
+        favBtn.title = "お気に入り";
+        favBtn.addEventListener("click", function (id) { return function () { toggleFavorite(id); }; }(task.id));
         var deleteBtn = document.createElement("button");
         deleteBtn.className = "btn-delete";
         deleteBtn.textContent = "削除";
         deleteBtn.addEventListener("click", function (id) { return function () { removeTask(id); }; }(task.id));
         header.appendChild(cb);
         header.appendChild(titleSpan);
+        header.appendChild(favBtn);
         header.appendChild(editBtn);
         header.appendChild(deleteBtn);
         card.appendChild(header);
+
+        // 期限行：date input + 状態ラベル（期限なし / 期限内 / 期限切れ）
+        var dueRow = document.createElement("div");
+        dueRow.className = "due-row";
+        var dueInput = document.createElement("input");
+        dueInput.type = "date";
+        dueInput.value = task.dueDate || "";
+        dueInput.addEventListener("change", function (id) {
+          return function () { setTaskDueDate(id, this.value || null); };
+        }(task.id));
+        var dueStateSpan = document.createElement("span");
+        dueStateSpan.className = "due-state";
+        dueStateSpan.textContent = dueState === "none" ? "期限なし" : dueState === "ok" ? "期限内" : "期限切れ";
+        dueRow.appendChild(dueInput);
+        dueRow.appendChild(dueStateSpan);
+        card.appendChild(dueRow);
 
         // タイマー
         var timerRow = document.createElement("div");
@@ -469,8 +675,26 @@
     document.getElementById("taskInput").addEventListener("keydown", function (e) {
       if (e.key === "Enter") addTask();
     });
+    document.getElementById("listSelect").addEventListener("change", function () {
+      setCurrentList(parseInt(this.value, 10));
+    });
+    document.getElementById("addListBtn").addEventListener("click", function () {
+      var name = window.prompt("新しいリスト名を入力してください");
+      if (name !== null) addList(name);
+    });
+    document.getElementById("deleteListBtn").addEventListener("click", function () {
+      if (currentListId === DEFAULT_LIST_ID) {
+        window.alert("デフォルトリストは削除できません");
+        return;
+      }
+      if (window.confirm("このリストを削除しますか？\n属するタスクはデフォルトリストに移動します。")) {
+        deleteList(currentListId);
+      }
+    });
 
+    loadLists();
     loadTasks();
+    renderListSelect();
     renderTasks();
   </script>
 </body>
