@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>電卓アプリ</title>
   <style>
-    /* ページ全体：中央配置の背景 */
     body {
       font-family: 'Segoe UI', 'Meiryo', sans-serif;
       display: flex;
@@ -16,8 +15,6 @@
       background: #d1d5db;
       color: #1f2937;
     }
-
-    /* カード型の電卓本体（実機に近い見た目） */
     .calculator {
       background: #f3f4f6;
       padding: 1.25rem;
@@ -28,8 +25,6 @@
         inset 0 1px 0 rgba(255, 255, 255, 0.8);
       border: 1px solid #e5e7eb;
     }
-
-    /* 表示欄：1行のみ・上部配置・右寄せ（実機電卓同様） */
     .display {
       width: 100%;
       min-height: 3.5rem;
@@ -46,8 +41,6 @@
       overflow: hidden;
       text-overflow: ellipsis;
     }
-
-    /* ボタンエリア：4列×5行のCSS Grid */
     .buttons {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
@@ -55,8 +48,6 @@
       gap: 0.5rem;
       width: 100%;
     }
-
-    /* ボタン共通スタイル（シンプル・視認性重視） */
     .btn {
       padding: 1rem 0.75rem;
       font-size: 1.25rem;
@@ -69,76 +60,34 @@
       box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
       transition: background 0.1s;
     }
-
-    .btn:active {
-      background: #e5e7eb;
-    }
-
-    /* 機能ボタン（⌫ AC %） */
+    .btn:active { background: #e5e7eb; }
     .btn-function {
       background: #e5e7eb;
       color: #374151;
     }
-
-    .btn-function:hover {
-      background: #d1d5db;
-    }
-
-    .btn-function:active {
-      background: #9ca3af;
-    }
-
-    /* 数字ボタン */
-    .btn-number {
-      background: #ffffff;
-    }
-
-    .btn-number:hover {
-      background: #f9fafb;
-    }
-
-    /* 右端列：演算子専用レーン（÷ × − + =） */
+    .btn-function:hover { background: #d1d5db; }
+    .btn-function:active { background: #9ca3af; }
+    .btn-number { background: #ffffff; }
+    .btn-number:hover { background: #f9fafb; }
     .btn-operator {
       background: #3b82f6;
       color: #ffffff;
       border-color: #2563eb;
     }
-
-    .btn-operator:hover {
-      background: #2563eb;
-    }
-
-    .btn-operator:active {
-      background: #1d4ed8;
-    }
-
-    /* = ボタン */
+    .btn-operator:hover { background: #2563eb; }
+    .btn-operator:active { background: #1d4ed8; }
     .btn-equals {
       background: #16a34a;
       color: #ffffff;
       border-color: #15803d;
     }
-
-    .btn-equals:hover {
-      background: #15803d;
-    }
-
-    .btn-equals:active {
-      background: #166534;
-    }
+    .btn-equals:hover { background: #15803d; }
+    .btn-equals:active { background: #166534; }
   </style>
 </head>
 <body>
   <div class="calculator">
-    <!-- 表示欄：上部・右寄せ -->
     <div class="display" id="display">0</div>
-
-    <!-- ボタン配置 4列×5行／右端列は演算子専用 -->
-    <!-- Row 1: ⌫   AC   %    ÷ -->
-    <!-- Row 2: 7    8    9    × -->
-    <!-- Row 3: 4    5    6    − -->
-    <!-- Row 4: 1    2    3    + -->
-    <!-- Row 5: ±    0    .    = -->
     <div class="buttons">
       <button class="btn btn-function" data-value="backspace">⌫</button>
       <button class="btn btn-function" data-value="AC">AC</button>
@@ -165,20 +114,19 @@
 
   <script>
     /**
-     * 電卓アプリ（実機電卓同様の操作感）
-     * 表示は1行のみ、計算履歴・改行なし
-     * 結果確定後：数値入力→初期化して新規、演算子入力→前回結果を被演算数に
+     * 電卓アプリ（実機電卓同様の挙動・初心者向け）
+     * 表示は常に1行のみ
      */
 
     const displayElement = document.getElementById('display');
 
-    let displayExpression = '0';
-    let currentValue = '0';
-    let previousValue = null;
-    let currentOperator = null;
+    let displayValue = '0';           // 表示用（1行）
+    let currentValue = '0';           // 現在入力中の数値
+    let previousValue = null;         // 第1オペランド
+    let currentOperator = null;       // 現在の演算子
+    let lastOperand2 = null;          // 連続「=」用の第2オペランド
 
-    // 内部演算子 → 表示用記号（× ÷ − を使用）
-    function toDisplayOperator(op) {
+    function toDisplayOp(op) {
       if (op === '*') return '×';
       if (op === '/') return '÷';
       if (op === '-') return '−';
@@ -186,165 +134,176 @@
     }
 
     function updateDisplay() {
-      displayElement.textContent = displayExpression;
+      displayElement.textContent = displayValue;
     }
 
-    // 計算結果が表示されているか（表示の末尾が「= 結果」の形式）
     function isResultDisplayed() {
-      return / = -?[\d.]+$/.test(displayExpression);
+      return / = -?[\d.]+$/.test(displayValue);
     }
 
-    // 数値・小数点を入力
-    function inputNumber(num) {
-      if (displayExpression === 'Error') {
-        displayExpression = num === '0' ? '0' : num;
-        currentValue = displayExpression;
-        previousValue = null;
-        currentOperator = null;
-        updateDisplay();
-        return;
-      }
-
-      // 結果確定後の数値入力：表示を初期化して新規入力を開始
-      if (isResultDisplayed()) {
-        if (num === '.') {
-          displayExpression = '0.';
-          currentValue = '0.';
-        } else {
-          displayExpression = num === '0' ? '0' : num;
-          currentValue = displayExpression;
-        }
-        previousValue = null;
-        currentOperator = null;
-        updateDisplay();
-        return;
-      }
-
-      // 小数点の入力
-      if (num === '.') {
-        if (currentValue.includes('.')) return;
-        currentValue += '.';
-        displayExpression += '.';
-        updateDisplay();
-        return;
-      }
-
-      // ± の入力（符号反転）
-      if (num === '±') {
-        toggleSign();
-        return;
-      }
-
-      // 0〜9の数値
-      if (currentValue === '0' && num !== '0') {
-        currentValue = num;
-        if (currentOperator !== null) {
-          displayExpression = displayExpression + num;
-        } else {
-          displayExpression = num;
-        }
-      } else if (currentValue !== '0' || num !== '0') {
-        currentValue += num;
-        displayExpression += num;
-      }
-      updateDisplay();
+    function isInitialOrEmpty() {
+      return displayValue === '0' || displayValue === '' || displayValue === 'Error';
     }
 
-    // 符号反転（±）
-    function toggleSign() {
-      if (displayExpression === 'Error' || isResultDisplayed()) return;
-
-      const num = parseFloat(currentValue);
-      if (num === 0) return;
-
-      const newNum = -num;
-      const newStr = String(newNum);
-      currentValue = newStr;
-
-      // 表示式の末尾の数値を置き換え
-      const lastNumMatch = displayExpression.match(/-?[\d.]+$/);
-      if (lastNumMatch) {
-        displayExpression = displayExpression.slice(0, -lastNumMatch[0].length) + newStr;
+    // 表示の末尾の数値を newStr に置換。末尾に数値がなければ append
+    function replaceLastNumber(newStr) {
+      const m = displayValue.match(/-?[\d.]+$/);
+      if (m) {
+        displayValue = displayValue.slice(0, -m[0].length) + newStr;
       } else {
-        displayExpression = newStr;
+        displayValue = displayValue + newStr;
+      }
+    }
+
+    // 数値入力（0〜9）：表示中の値に連結
+    function inputNumber(num) {
+      if (displayValue === 'Error') {
+        displayValue = num === '0' ? '0' : num;
+        currentValue = displayValue;
+        previousValue = null;
+        currentOperator = null;
+        lastOperand2 = null;
+        updateDisplay();
+        return;
+      }
+
+      // 結果確定後の数値入力：リセットして新規開始
+      if (isResultDisplayed()) {
+        displayValue = num === '0' ? '0' : num;
+        currentValue = displayValue;
+        previousValue = null;
+        currentOperator = null;
+        lastOperand2 = null;
+        updateDisplay();
+        return;
+      }
+
+      // 小数点
+      if (num === '.') {
+        if (isInitialOrEmpty()) {
+          displayValue = '0.';
+          currentValue = '0.';
+        } else if (!currentValue.includes('.')) {
+          currentValue += '.';
+          displayValue += '.';
+        }
+        updateDisplay();
+        return;
+      }
+
+      // ±
+      if (num === '±') {
+        if (isInitialOrEmpty() || displayValue === '') {
+          displayValue = '0';
+          currentValue = '0';
+        } else {
+          const n = parseFloat(currentValue);
+          const newVal = String(-n);
+          currentValue = newVal;
+          replaceLastNumber(newVal);
+        }
+        updateDisplay();
+        return;
+      }
+
+      // 0〜9
+      if (isInitialOrEmpty() && num !== '0') {
+        displayValue = num;
+        currentValue = num;
+      } else {
+        if (currentValue === '0' && num !== '0') {
+          currentValue = num;
+          replaceLastNumber(num);
+        } else {
+          currentValue += num;
+          replaceLastNumber(currentValue);
+        }
       }
       updateDisplay();
     }
 
-    // バックスペース（⌫）
+    // バックスペース
     function backspace() {
-      if (displayExpression === 'Error' || isResultDisplayed()) return;
-
+      if (displayValue === 'Error' || isResultDisplayed()) return;
       if (currentValue.length <= 1) {
         currentValue = '0';
-        displayExpression = currentOperator !== null
-          ? displayExpression.replace(/-?[\d.]+$/, '0')
-          : '0';
+        if (currentOperator !== null) replaceLastNumber('0');
+        else displayValue = '0';
       } else {
         currentValue = currentValue.slice(0, -1);
-        displayExpression = displayExpression.slice(0, -1);
+        displayValue = displayValue.slice(0, -1);
       }
       updateDisplay();
     }
 
-    // パーセント（%）：現在の値を100で割る
+    // %：直前の数値を100で割る（単体でも演算中でも使用可能）
     function inputPercent() {
-      if (displayExpression === 'Error' || isResultDisplayed()) return;
+      if (displayValue === 'Error') return;
+      if (isResultDisplayed()) return;
 
-      const num = parseFloat(currentValue) / 100;
-      const newStr = num.toString();
-      currentValue = newStr;
-
-      const lastNumMatch = displayExpression.match(/-?[\d.]+$/);
-      if (lastNumMatch) {
-        displayExpression = displayExpression.slice(0, -lastNumMatch[0].length) + newStr;
-      } else {
-        displayExpression = newStr;
-      }
+      const n = parseFloat(currentValue || '0') / 100;
+      const s = String(n);
+      currentValue = s;
+      replaceLastNumber(s);
       updateDisplay();
     }
 
+    // 演算子入力
     function inputOperator(operator) {
+      if (displayValue === 'Error') return;
+
+      // 結果確定後の演算子：前回結果を被演算数に使用
       if (isResultDisplayed()) {
-        displayExpression = displayExpression + '\n' + currentValue + ' ' + toDisplayOperator(operator) + ' ';
-        previousValue = parseFloat(currentValue);
+        const result = parseFloat(currentValue);
+        displayValue = currentValue + ' ' + toDisplayOp(operator) + ' ';
+        previousValue = result;
         currentOperator = operator;
         currentValue = '0';
+        lastOperand2 = null;
         updateDisplay();
-        return;
-      }
-      if (displayExpression === 'Error') {
         return;
       }
 
       const num = parseFloat(currentValue);
-      const displayOp = toDisplayOperator(operator);
+      const displayOp = toDisplayOp(operator);
 
+      // 既に演算子が有る場合：連続演算子は最後のみ有効（計算せず置換）
+      if (previousValue !== null && currentOperator !== null) {
+        const endsWithOp = /[\s]+[+\-×÷\u2212][\s]*$/.test(displayValue);
+        if (endsWithOp) {
+          displayValue = displayValue.replace(/[\s]+[+\-×÷\u2212][\s]*$/, ' ' + displayOp + ' ');
+          currentOperator = operator;
+          updateDisplay();
+          return;
+        }
+      }
+
+      // 通常：第1オペランドと演算子を確定
       if (previousValue !== null && currentOperator !== null) {
         const result = calculate(previousValue, num, currentOperator);
         if (result === 'Error') {
-          displayExpression = 'Error';
+          displayValue = 'Error';
           currentValue = 'Error';
           previousValue = null;
           currentOperator = null;
+          lastOperand2 = null;
           updateDisplay();
           return;
         }
         previousValue = result;
+        lastOperand2 = num;
         currentValue = String(result);
-        displayExpression = currentValue + ' ' + displayOp + ' ';
       } else {
         previousValue = num;
-        displayExpression = currentValue + ' ' + displayOp + ' ';
       }
-
+      displayValue = String(previousValue) + ' ' + displayOp + ' ';
       currentOperator = operator;
       currentValue = '0';
       updateDisplay();
     }
 
-    function calculate(a, b, operator) {
-      switch (operator) {
+    function calculate(a, b, op) {
+      switch (op) {
         case '+': return a + b;
         case '-': return a - b;
         case '*': return a * b;
@@ -353,71 +312,69 @@
       }
     }
 
+    // = 押下
     function executeEquals() {
-      if (previousValue === null || currentOperator === null || displayExpression === 'Error') {
+      if (displayValue === 'Error') return;
+
+      // 結果表示中に = 連続：同じ演算を繰り返す
+      if (isResultDisplayed()) {
+        if (previousValue === null || currentOperator === null || lastOperand2 === null) return;
+        const result = calculate(previousValue, lastOperand2, currentOperator);
+        if (result === 'Error') return;
+        const resultStr = String(result);
+        displayValue = String(previousValue) + ' ' + toDisplayOp(currentOperator) + ' ' + lastOperand2 + ' = ' + resultStr;
+        currentValue = resultStr;
+        previousValue = result;
+        updateDisplay();
         return;
       }
 
+      if (previousValue === null || currentOperator === null) return;
+
       const num = parseFloat(currentValue);
       const result = calculate(previousValue, num, currentOperator);
-      const resultStr = result === 'Error' ? 'Error' : String(
-        Number.isInteger(result) ? result : Math.round(result * 1000000) / 1000000
-      );
+      const resultStr = result === 'Error' ? 'Error' : String(result);
 
-      const endsWithOperator = /[\s]+[+\-×÷\u2212][\s]*$/.test(displayExpression);
-      displayExpression = endsWithOperator
-        ? displayExpression + currentValue + ' = ' + resultStr
-        : displayExpression + ' = ' + resultStr;
+      const endsWithOp = /[\s]+[+\-×÷\u2212][\s]*$/.test(displayValue);
+      displayValue = endsWithOp
+        ? displayValue + currentValue + ' = ' + resultStr
+        : displayValue + ' = ' + resultStr;
 
       currentValue = resultStr;
-
       if (result === 'Error') {
         previousValue = null;
         currentOperator = null;
+        lastOperand2 = null;
       } else {
-        // 結果を保持（演算子入力時に被演算数として使用）
         previousValue = parseFloat(resultStr);
-        // 数値入力時は新規扱いのため演算子はクリア
-        currentOperator = null;
+        lastOperand2 = num;
       }
-
       updateDisplay();
     }
 
     function clearAll() {
-      displayExpression = '0';
+      displayValue = '0';
       currentValue = '0';
       previousValue = null;
       currentOperator = null;
+      lastOperand2 = null;
       updateDisplay();
     }
 
     function handleButtonClick(value) {
-      if (value >= '0' && value <= '9') {
-        inputNumber(value);
-      } else if (value === '.') {
-        inputNumber('.');
-      } else if (value === '±') {
-        inputNumber('±');
-      } else if (value === 'backspace') {
-        backspace();
-      } else if (value === 'AC') {
-        clearAll();
-      } else if (value === '%') {
-        inputPercent();
-      } else if (value === '=') {
-        executeEquals();
-      } else if (['+', '-', '*', '/'].includes(value)) {
-        inputOperator(value);
-      }
+      if (value >= '0' && value <= '9') inputNumber(value);
+      else if (value === '.') inputNumber('.');
+      else if (value === '±') inputNumber('±');
+      else if (value === 'backspace') backspace();
+      else if (value === 'AC') clearAll();
+      else if (value === '%') inputPercent();
+      else if (value === '=') executeEquals();
+      else if (['+', '-', '*', '/'].includes(value)) inputOperator(value);
     }
 
     document.querySelectorAll('.btn').forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        handleButtonClick(btn.dataset.value);
-      });
+      btn.addEventListener('click', function () { handleButtonClick(btn.dataset.value); });
     });
-
     updateDisplay();
   </script>
 </body>
