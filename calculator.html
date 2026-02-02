@@ -175,12 +175,23 @@
 
     // 数値を入力する
     function inputNumber(num) {
-      // 直前が「=」や「Error」の場合は新しい式として開始
-      if (displayExpression.endsWith('=') || displayExpression === 'Error') {
+      // 直前が「Error」の場合はリセットして開始
+      if (displayExpression === 'Error') {
         displayExpression = num === '0' ? '0' : num;
         currentValue = displayExpression;
         previousValue = null;
         currentOperator = null;
+        updateDisplay();
+        return;
+      }
+
+      // 直前が「=」の場合は、結果を左辺に、前回の演算子を保持して次の入力を開始
+      // （演算子ボタンが押されない限り前回の演算子を保持する仕様）
+      if (displayExpression.endsWith('=')) {
+        // previousValue, currentOperator は executeEquals で既に設定済み（保持）
+        displayExpression = currentValue + ' ' + toDisplayOperator(currentOperator) + ' ';
+        currentValue = num === '0' ? '0' : num;
+        displayExpression += currentValue;
         updateDisplay();
         return;
       }
@@ -273,8 +284,17 @@
         : displayExpression + ' = ' + resultStr;
 
       currentValue = resultStr;
-      previousValue = null;
-      currentOperator = null;
+
+      if (result === 'Error') {
+        previousValue = null;
+        currentOperator = null;
+      } else {
+        // 結果を次の「=」の左辺として保持し、演算子も保持する
+        // （演算子ボタンが押されない限り前回の演算子を保持する仕様）
+        previousValue = parseFloat(resultStr);
+        // currentOperator は null にしない（保持）
+      }
+
       updateDisplay();
     }
 
