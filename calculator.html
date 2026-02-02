@@ -145,6 +145,24 @@
       return displayValue === '0' || displayValue === '' || displayValue === 'Error';
     }
 
+    // 演算子入力直後か（表示が「 op 」で終わっている）
+    function isRightAfterOperator() {
+      return /[\s]+[+\-×÷\u2212][\s]*$/.test(displayValue);
+    }
+
+    // 計算結果を四捨五入し、小数点以下最大10桁で表示用に整形
+    function formatResult(num) {
+      if (num === 'Error' || typeof num !== 'number' || !isFinite(num)) return String(num);
+      const rounded = Math.round(num * 1e10) / 1e10;
+      let str = String(rounded);
+      if (str.includes('.')) {
+        const parts = str.split('.');
+        const decimals = parts[1].slice(0, 10).replace(/0+$/, '');
+        str = decimals ? parts[0] + '.' + decimals : parts[0];
+      }
+      return str;
+    }
+
     // 表示の末尾の数値を newStr に置換。末尾に数値がなければ append
     function replaceLastNumber(newStr) {
       const m = displayValue.match(/-?[\d.]+$/);
@@ -178,14 +196,17 @@
         return;
       }
 
-      // 小数点
+      // 小数点：数値未入力または演算子直後は「0.」、同一数値内で1回のみ
       if (num === '.') {
         if (isInitialOrEmpty()) {
           displayValue = '0.';
           currentValue = '0.';
+        } else if (isRightAfterOperator()) {
+          displayValue = displayValue + '0.';
+          currentValue = '0.';
         } else if (!currentValue.includes('.')) {
           currentValue += '.';
-          displayValue += '.';
+          replaceLastNumber(currentValue);
         }
         updateDisplay();
         return;
@@ -321,8 +342,8 @@
         if (previousValue === null || currentOperator === null || lastOperand2 === null) return;
         const result = calculate(previousValue, lastOperand2, currentOperator);
         if (result === 'Error') return;
-        const resultStr = String(result);
-        displayValue = String(previousValue) + ' ' + toDisplayOp(currentOperator) + ' ' + lastOperand2 + ' = ' + resultStr;
+        const resultStr = formatResult(result);
+        displayValue = formatResult(previousValue) + ' ' + toDisplayOp(currentOperator) + ' ' + formatResult(lastOperand2) + ' = ' + resultStr;
         currentValue = resultStr;
         previousValue = result;
         updateDisplay();
@@ -333,7 +354,7 @@
 
       const num = parseFloat(currentValue);
       const result = calculate(previousValue, num, currentOperator);
-      const resultStr = result === 'Error' ? 'Error' : String(result);
+      const resultStr = result === 'Error' ? 'Error' : formatResult(result);
 
       const endsWithOp = /[\s]+[+\-×÷\u2212][\s]*$/.test(displayValue);
       displayValue = endsWithOp
