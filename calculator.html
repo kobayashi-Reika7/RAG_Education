@@ -5,177 +5,190 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>電卓アプリ</title>
   <style>
-    /* 電卓全体のレイアウト */
+    /* ページ全体：中央配置の背景 */
     body {
       font-family: 'Segoe UI', 'Meiryo', sans-serif;
       display: flex;
-      flex-direction: column;
       align-items: center;
       justify-content: center;
       min-height: 100vh;
       margin: 0;
-      background: linear-gradient(160deg, #2c3e50 0%, #3498db 100%);
-      color: #2c3e50;
+      background: #d1d5db;
+      color: #1f2937;
     }
 
-    /* 電卓本体のコンテナ */
+    /* カード型の電卓本体（実機に近い見た目） */
     .calculator {
-      background: #ecf0f1;
-      padding: 1.5rem;
+      background: #f3f4f6;
+      padding: 1.25rem;
       border-radius: 1rem;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+      box-shadow:
+        0 4px 6px rgba(0, 0, 0, 0.1),
+        0 1px 3px rgba(0, 0, 0, 0.08),
+        inset 0 1px 0 rgba(255, 255, 255, 0.8);
+      border: 1px solid #e5e7eb;
     }
 
-    /* タイトル */
-    h1 {
-      text-align: center;
-      font-size: 1.25rem;
-      margin: 0 0 1rem 0;
-      color: #2c3e50;
-    }
-
-    /* 表示エリア（計算式・結果を表示） */
+    /* 表示欄：上部配置・右寄せ */
     .display {
       width: 100%;
-      min-height: 3rem;
+      min-height: 3.5rem;
       padding: 0.75rem 1rem;
-      font-size: 1.5rem;
+      font-size: 1.75rem;
       text-align: right;
-      background: #fff;
-      border: 2px solid #bdc3c7;
+      background: #1f2937;
+      color: #f9fafb;
       border-radius: 0.5rem;
       margin-bottom: 1rem;
       box-sizing: border-box;
       font-variant-numeric: tabular-nums;
+      border: 2px solid #374151;
     }
 
-    /* ボタンエリア（グリッドレイアウト） */
+    /* ボタンエリア：4列×5行のCSS Grid */
     .buttons {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
+      grid-template-rows: repeat(5, 1fr);
       gap: 0.5rem;
+      width: 100%;
     }
 
-    /* 各ボタンの共通スタイル */
+    /* ボタン共通スタイル（シンプル・視認性重視） */
     .btn {
-      padding: 1rem;
+      padding: 1rem 0.75rem;
       font-size: 1.25rem;
       font-weight: 600;
-      border: none;
+      border: 1px solid #d1d5db;
       border-radius: 0.5rem;
       cursor: pointer;
-      transition: transform 0.1s, background 0.15s;
+      background: #ffffff;
+      color: #1f2937;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+      transition: background 0.1s;
     }
 
-    /* クリック時の即時フィードバック（レスポンス要件に対応） */
     .btn:active {
-      transform: scale(0.96);
+      background: #e5e7eb;
+    }
+
+    /* 機能ボタン（⌫ AC %） */
+    .btn-function {
+      background: #e5e7eb;
+      color: #374151;
+    }
+
+    .btn-function:hover {
+      background: #d1d5db;
+    }
+
+    .btn-function:active {
+      background: #9ca3af;
     }
 
     /* 数字ボタン */
     .btn-number {
-      background: #fff;
-      color: #2c3e50;
-      border: 2px solid #bdc3c7;
+      background: #ffffff;
     }
 
     .btn-number:hover {
-      background: #e8e8e8;
-      border-color: #95a5a6;
+      background: #f9fafb;
     }
 
-    /* 演算子ボタン */
+    /* 右端列：演算子専用レーン（÷ × − + =） */
     .btn-operator {
-      background: #3498db;
-      color: #fff;
+      background: #3b82f6;
+      color: #ffffff;
+      border-color: #2563eb;
     }
 
     .btn-operator:hover {
-      background: #2980b9;
+      background: #2563eb;
     }
 
-    /* 実行ボタン（=） */
+    .btn-operator:active {
+      background: #1d4ed8;
+    }
+
+    /* = ボタン */
     .btn-equals {
-      background: #27ae60;
-      color: #fff;
+      background: #16a34a;
+      color: #ffffff;
+      border-color: #15803d;
     }
 
     .btn-equals:hover {
-      background: #229954;
+      background: #15803d;
     }
 
-    /* クリアボタン */
-    .btn-clear {
-      background: #e74c3c;
-      color: #fff;
-    }
-
-    .btn-clear:hover {
-      background: #c0392b;
+    .btn-equals:active {
+      background: #166534;
     }
   </style>
 </head>
 <body>
   <div class="calculator">
-    <h1>電卓アプリ</h1>
+    <!-- 表示欄：上部・右寄せ -->
     <div class="display" id="display">0</div>
+
+    <!-- ボタン配置 4列×5行／右端列は演算子専用 -->
+    <!-- Row 1: ⌫   AC   %    ÷ -->
+    <!-- Row 2: 7    8    9    × -->
+    <!-- Row 3: 4    5    6    − -->
+    <!-- Row 4: 1    2    3    + -->
+    <!-- Row 5: ±    0    .    = -->
     <div class="buttons">
+      <button class="btn btn-function" data-value="backspace">⌫</button>
+      <button class="btn btn-function" data-value="AC">AC</button>
+      <button class="btn btn-function" data-value="%">%</button>
+      <button class="btn btn-operator" data-value="/">÷</button>
       <button class="btn btn-number" data-value="7">7</button>
       <button class="btn btn-number" data-value="8">8</button>
       <button class="btn btn-number" data-value="9">9</button>
-      <button class="btn btn-operator" data-value="/">÷</button>
+      <button class="btn btn-operator" data-value="*">×</button>
       <button class="btn btn-number" data-value="4">4</button>
       <button class="btn btn-number" data-value="5">5</button>
       <button class="btn btn-number" data-value="6">6</button>
-      <button class="btn btn-operator" data-value="*">×</button>
+      <button class="btn btn-operator" data-value="-">−</button>
       <button class="btn btn-number" data-value="1">1</button>
       <button class="btn btn-number" data-value="2">2</button>
       <button class="btn btn-number" data-value="3">3</button>
-      <button class="btn btn-operator" data-value="-">−</button>
-      <button class="btn btn-number" data-value="0">0</button>
-      <button class="btn btn-clear" data-value="C">C</button>
-      <button class="btn btn-equals" data-value="=">=</button>
       <button class="btn btn-operator" data-value="+">+</button>
+      <button class="btn btn-number" data-value="±">±</button>
+      <button class="btn btn-number" data-value="0">0</button>
+      <button class="btn btn-number" data-value=".">.</button>
+      <button class="btn btn-equals" data-value="=">=</button>
     </div>
   </div>
 
   <script>
     /**
-     * 電卓アプリのメインロジック
-     * 要件: 四則演算、クリア、数値入力、表示、実行
-     * データは変数のみで保持（ページ内の一時データ）
+     * 電卓アプリ（初心者向け・学習用）
+     * 記号統一：±・×・÷・−
+     * 演算子ボタンが押されない限り前回の演算子を保持
      */
 
-    // 表示用のDOM要素
     const displayElement = document.getElementById('display');
 
-    // 表示用の式（+、−、×、÷、= を含めて画面上に表示する文字列）
     let displayExpression = '0';
-
-    // 現在の入力値（ユーザーが入力中の数値）
     let currentValue = '0';
-
-    // 前の値（演算子の左側の数値）
     let previousValue = null;
-
-    // 選択中の演算子（+, -, *, /）
     let currentOperator = null;
 
-    // 演算子の内部表現を表示用記号に変換（*→×, /→÷）
+    // 内部演算子 → 表示用記号（× ÷ − を使用）
     function toDisplayOperator(op) {
       if (op === '*') return '×';
       if (op === '/') return '÷';
+      if (op === '-') return '−';
       return op;
     }
 
-    // 表示エリアを更新する（即座に反映するため同期的に実行）
     function updateDisplay() {
       displayElement.textContent = displayExpression;
     }
 
-    // 数値を入力する
+    // 数値・小数点を入力
     function inputNumber(num) {
-      // 直前が「Error」の場合はリセットして開始
       if (displayExpression === 'Error') {
         displayExpression = num === '0' ? '0' : num;
         currentValue = displayExpression;
@@ -185,10 +198,7 @@
         return;
       }
 
-      // 直前が「=」の場合は、結果を左辺に、前回の演算子を保持して次の入力を開始
-      // （演算子ボタンが押されない限り前回の演算子を保持する仕様）
       if (displayExpression.endsWith('=')) {
-        // previousValue, currentOperator は executeEquals で既に設定済み（保持）
         displayExpression = currentValue + ' ' + toDisplayOperator(currentOperator) + ' ';
         currentValue = num === '0' ? '0' : num;
         displayExpression += currentValue;
@@ -196,10 +206,24 @@
         return;
       }
 
-      // 先頭の0を除く（0の連続入力防止）
+      // 小数点の入力
+      if (num === '.') {
+        if (currentValue.includes('.')) return;
+        currentValue += '.';
+        displayExpression += '.';
+        updateDisplay();
+        return;
+      }
+
+      // ± の入力（符号反転）
+      if (num === '±') {
+        toggleSign();
+        return;
+      }
+
+      // 0〜9の数値
       if (currentValue === '0' && num !== '0') {
         currentValue = num;
-        // 表示式に数値を追加（「12 + 」→「12 + 1」、先頭の場合は「0」→「1」）
         if (currentOperator !== null) {
           displayExpression = displayExpression + num;
         } else {
@@ -212,20 +236,71 @@
       updateDisplay();
     }
 
-    // 演算子を押したときの処理
+    // 符号反転（±）
+    function toggleSign() {
+      if (displayExpression === 'Error' || displayExpression.endsWith('=')) return;
+
+      const num = parseFloat(currentValue);
+      if (num === 0) return;
+
+      const newNum = -num;
+      const newStr = String(newNum);
+      currentValue = newStr;
+
+      // 表示式の末尾の数値を置き換え
+      const lastNumMatch = displayExpression.match(/-?[\d.]+$/);
+      if (lastNumMatch) {
+        displayExpression = displayExpression.slice(0, -lastNumMatch[0].length) + newStr;
+      } else {
+        displayExpression = newStr;
+      }
+      updateDisplay();
+    }
+
+    // バックスペース（⌫）
+    function backspace() {
+      if (displayExpression === 'Error' || displayExpression.endsWith('=')) return;
+
+      if (currentValue.length <= 1) {
+        currentValue = '0';
+        displayExpression = currentOperator !== null
+          ? displayExpression.replace(/-?[\d.]+$/, '0')
+          : '0';
+      } else {
+        currentValue = currentValue.slice(0, -1);
+        displayExpression = displayExpression.slice(0, -1);
+      }
+      updateDisplay();
+    }
+
+    // パーセント（%）：現在の値を100で割る
+    function inputPercent() {
+      if (displayExpression === 'Error' || displayExpression.endsWith('=')) return;
+
+      const num = parseFloat(currentValue) / 100;
+      const newStr = num.toString();
+      currentValue = newStr;
+
+      const lastNumMatch = displayExpression.match(/-?[\d.]+$/);
+      if (lastNumMatch) {
+        displayExpression = displayExpression.slice(0, -lastNumMatch[0].length) + newStr;
+      } else {
+        displayExpression = newStr;
+      }
+      updateDisplay();
+    }
+
     function inputOperator(operator) {
-      // 直前が「=」や「Error」の場合は表示式を結果だけにしてから演算子を付ける
       if (displayExpression.endsWith('=')) {
         displayExpression = currentValue;
         previousValue = parseFloat(currentValue);
       } else if (displayExpression === 'Error') {
-        return; // Error状態では演算子を受け付けない
+        return;
       }
 
       const num = parseFloat(currentValue);
       const displayOp = toDisplayOperator(operator);
 
-      // 連続で演算子を押した場合は前の計算を先に実行
       if (previousValue !== null && currentOperator !== null) {
         const result = calculate(previousValue, num, currentOperator);
         if (result === 'Error') {
@@ -238,20 +313,17 @@
         }
         previousValue = result;
         currentValue = String(result);
-        // 計算結果と新しい演算子を表示（例: 「12 + 34 + 」）
         displayExpression = currentValue + ' ' + displayOp + ' ';
       } else {
         previousValue = num;
-        // 数値と演算子を表示（例: 「12 + 」）
         displayExpression = currentValue + ' ' + displayOp + ' ';
       }
 
       currentOperator = operator;
-      currentValue = '0'; // 次の数値入力に備えてリセット
+      currentValue = '0';
       updateDisplay();
     }
 
-    // 四則演算を実行する
     function calculate(a, b, operator) {
       switch (operator) {
         case '+': return a + b;
@@ -262,7 +334,6 @@
       }
     }
 
-    // 「=」で計算を実行する
     function executeEquals() {
       if (previousValue === null || currentOperator === null || displayExpression === 'Error') {
         return;
@@ -270,15 +341,11 @@
 
       const num = parseFloat(currentValue);
       const result = calculate(previousValue, num, currentOperator);
-
-      // 結果を表示用に整形（エラーの場合はそのまま、小数は適度に丸める）
       const resultStr = result === 'Error' ? 'Error' : String(
         Number.isInteger(result) ? result : Math.round(result * 1000000) / 1000000
       );
 
-      // 式と「=」と結果を表示（例: 「12 + 34 = 46」）
-      // 演算子の直後で数値未入力の場合は「0」を補う（例: 「12 + 34 + 0 = 46」）
-      const endsWithOperator = /[\s]+[+\-×÷][\s]*$/.test(displayExpression);
+      const endsWithOperator = /[\s]+[+\-×÷\u2212][\s]*$/.test(displayExpression);
       displayExpression = endsWithOperator
         ? displayExpression + currentValue + ' = ' + resultStr
         : displayExpression + ' = ' + resultStr;
@@ -289,16 +356,12 @@
         previousValue = null;
         currentOperator = null;
       } else {
-        // 結果を次の「=」の左辺として保持し、演算子も保持する
-        // （演算子ボタンが押されない限り前回の演算子を保持する仕様）
         previousValue = parseFloat(resultStr);
-        // currentOperator は null にしない（保持）
       }
 
       updateDisplay();
     }
 
-    // クリアする（表示と状態をリセット）
     function clearAll() {
       displayExpression = '0';
       currentValue = '0';
@@ -307,12 +370,19 @@
       updateDisplay();
     }
 
-    // ボタンクリック時の処理を振り分ける
     function handleButtonClick(value) {
       if (value >= '0' && value <= '9') {
         inputNumber(value);
-      } else if (value === 'C') {
+      } else if (value === '.') {
+        inputNumber('.');
+      } else if (value === '±') {
+        inputNumber('±');
+      } else if (value === 'backspace') {
+        backspace();
+      } else if (value === 'AC') {
         clearAll();
+      } else if (value === '%') {
+        inputPercent();
       } else if (value === '=') {
         executeEquals();
       } else if (['+', '-', '*', '/'].includes(value)) {
@@ -320,14 +390,12 @@
       }
     }
 
-    // 各ボタンにクリックイベントを紐づける
     document.querySelectorAll('.btn').forEach(function (btn) {
       btn.addEventListener('click', function () {
         handleButtonClick(btn.dataset.value);
       });
     });
 
-    // 初期表示
     updateDisplay();
   </script>
 </body>
