@@ -85,6 +85,7 @@ Day3/
 
 | メソッド | パス | 説明 |
 |----------|------|------|
+| GET | /health | ヘルスチェック（クラウドデプロイ用） |
 | GET | /tasks | タスク一覧取得 |
 | POST | /tasks | タスク追加 |
 | PUT | /tasks/{id} | タスク更新 |
@@ -94,3 +95,7 @@ Day3/
 | DELETE | /lists/{id} | リスト削除 |
 
 詳細は `docs/DESIGN.md` を参照してください。
+
+## クラウドデプロイ
+
+フロントを Vercel / Netlify へ、バックエンドを Railway / Render などへデプロイする手順は **`docs/DEPLOYMENT.md`** を参照してください。環境変数（CORS・API ベース URL）の設定も記載しています。
