@@ -11,58 +11,60 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000';
  * @returns {Promise<object|void>} レスポンス JSON。204 の場合は undefined
  * @throws {Error} res.ok が false のとき（detail または statusText をメッセージに含む）
  */
-async function request(path, options = {}) {
+function request(path, options = {}) {
   const url = `${API_BASE}${path}`;
-  const res = await fetch(url, {
+  return fetch(url, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
       ...options.headers,
     },
+  }).then((res) => {
+    if (!res.ok) {
+      return res.json().catch(() => ({})).then((err) => {
+        throw new Error(err.detail || res.statusText);
+      });
+    }
+    if (res.status === 204) return;
+    return res.json();
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || res.statusText);
-  }
-  if (res.status === 204) return;
-  return res.json();
 }
 
 // ===== タスク API =====
-export async function getTasks() {
+export function getTasks() {
   return request('/tasks');
 }
 
-export async function createTask(data) {
+export function createTask(data) {
   return request('/tasks', {
     method: 'POST',
     body: JSON.stringify(data),
   });
 }
 
-export async function updateTask(id, data) {
+export function updateTask(id, data) {
   return request(`/tasks/${id}`, {
     method: 'PUT',
     body: JSON.stringify(data),
   });
 }
 
-export async function deleteTask(id) {
+export function deleteTask(id) {
   return request(`/tasks/${id}`, { method: 'DELETE' });
 }
 
 // ===== リスト API =====
-export async function getLists() {
+export function getLists() {
   return request('/lists');
 }
 
-export async function createList(name) {
+export function createList(name) {
   return request('/lists', {
     method: 'POST',
     body: JSON.stringify({ name }),
   });
 }
 
-export async function deleteList(id) {
+export function deleteList(id) {
   return request(`/lists/${id}`, { method: 'DELETE' });
 }

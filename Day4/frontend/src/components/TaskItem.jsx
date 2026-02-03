@@ -1,38 +1,39 @@
 /**
  * 1タスクの表示・編集・削除・お気に入り・期限・タイマー・メモ
- * 状態変更は親の onUpdate を呼び、親が API を呼ぶ
+ * 状態変更は親の onUpdate を呼び、親が API を呼ぶ（VERIFICATION 確認項目 3〜8）
  */
 import React, { useState } from 'react';
+import { getDueState } from '../utils/taskUtils';
 import Timer from './Timer';
 import Memo from './Memo';
 
-function getDueState(dueDate) {
-  if (!dueDate) return 'none';
-  const today = new Date().toISOString().slice(0, 10);
-  if (dueDate < today) return 'overdue';
-  return 'ok';
-}
-
 function TaskItem({ task, onUpdate, onDelete }) {
   const [editing, setEditing] = useState(false);
-  const [editTitle, setEditTitle] = useState(task.title);
+  const [editTitle, setEditTitle] = useState(task.title ?? '');
 
-  const dueState = getDueState(task.due_date);
+  // お気に入り・期限・タイマー・メモは Firestore に無い古いドキュメントでも安全に表示
+  const isCompleted = task.is_completed ?? false;
+  const isFavorite = task.is_favorite ?? false;
+  const dueDate = task.due_date ?? null;
+  const memo = task.memo ?? '';
+  const time = task.time ?? 0;
+
+  const dueState = getDueState(dueDate);
   const cardClass = [
     'task-card',
-    task.is_completed && 'completed',
+    isCompleted && 'completed',
     dueState === 'overdue' && 'overdue',
-    task.is_favorite && 'favorite',
+    isFavorite && 'favorite',
   ]
     .filter(Boolean)
     .join(' ');
 
   const handleToggleComplete = () => {
-    onUpdate(task.id, { is_completed: !task.is_completed });
+    onUpdate(task.id, { is_completed: !isCompleted });
   };
 
   const handleToggleFavorite = () => {
-    onUpdate(task.id, { is_favorite: !task.is_favorite });
+    onUpdate(task.id, { is_favorite: !isFavorite });
   };
 
   const handleSaveTitle = () => {
@@ -63,29 +64,27 @@ function TaskItem({ task, onUpdate, onDelete }) {
           onChange={handleToggleComplete}
         />
         {editing ? (
-          <>
-            <input
-              type="text"
-              className="task-title"
-              value={editTitle}
-              onChange={(e) => setEditTitle(e.target.value)}
-              onBlur={handleSaveTitle}
-              onKeyDown={(e) => e.key === 'Enter' && handleSaveTitle()}
-              autoFocus
-            />
-          </>
+          <input
+            type="text"
+            className="task-title edit-mode"
+            value={editTitle}
+            onChange={(e) => setEditTitle(e.target.value)}
+            onBlur={handleSaveTitle}
+            onKeyDown={(e) => e.key === 'Enter' && handleSaveTitle()}
+            autoFocus
+          />
         ) : (
           <span className="task-title" onDoubleClick={() => setEditing(true)}>
-            {task.title}
+            {task.title ?? ''}
           </span>
         )}
         <button
           type="button"
-          className={`btn-favorite ${task.is_favorite ? 'active' : ''}`}
+          className={`btn-favorite ${isFavorite ? 'active' : ''}`}
           onClick={handleToggleFavorite}
           title="お気に入り"
         >
-          {task.is_favorite ? '★' : '☆'}
+          {isFavorite ? '★' : '☆'}
         </button>
         <button type="button" className="btn-edit" onClick={() => setEditing(!editing)}>
           編集
@@ -96,17 +95,17 @@ function TaskItem({ task, onUpdate, onDelete }) {
       </div>
 
       <div className="due-row">
-        <input type="date" value={task.due_date || ''} onChange={handleDueChange} />
-        <span>{dueState === 'none' ? '期限なし' : dueState === 'ok' ? '期限内' : '期限切れ'}</span>
+        <input type="date" value={dueDate || ''} onChange={handleDueChange} />
+        <span className="due-state">{dueState === 'none' ? '期限なし' : dueState === 'ok' ? '期限内' : '期限切れ'}</span>
       </div>
 
       <Timer
         taskId={task.id}
-        initialTime={task.time}
+        initialTime={time}
         onTimeChange={handleTimeChange}
       />
 
-      <Memo value={task.memo} onChange={handleMemoChange} />
+      <Memo value={memo} onChange={handleMemoChange} />
     </li>
   );
 }

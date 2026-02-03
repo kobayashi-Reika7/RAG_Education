@@ -19,7 +19,7 @@ _origins_env = os.getenv("ALLOWED_ORIGINS", "").strip()
 ALLOWED_ORIGINS = (
     [o.strip() for o in _origins_env.split(",") if o.strip()]
     if _origins_env
-    else ["http://localhost:5173", "http://127.0.0.1:5173"]
+    else ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5100", "http://127.0.0.1:5100"]
 )
 
 app = FastAPI(title="ToDo API", version="1.0")

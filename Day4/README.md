@@ -1,7 +1,11 @@
-# Day4 ToDoアプリ（React + Firestore）
+# Day4 ToDoアプリ（Day2相当 + Firestore永続化）
 
-React（Vite）と Firebase Firestore を接続した学習用 ToDo アプリです。  
-タスクの追加・取得・削除ができ、リロードしてもデータが保持されます。
+React（Vite）と Firebase Firestore を直結した学習用 ToDo アプリです。  
+**Day2 の機能を再現**しつつ、データを Firestore でクラウド永続化します。
+
+- **データ経路**: フロントエンド → Firestore 直接（Firebase SDK）
+- **機能**: リスト／期限／お気に入り／カウンター／メモ／タイマー
+- **永続化**: リロード・タブを閉じてもデータが残る
 
 ## 前提
 
@@ -54,46 +58,47 @@ VITE_FIREBASE_APP_ID=xxxx
 ### 4. 依存関係のインストールと起動
 
 ```bash
+cd Day4/frontend
 npm install
 npm run dev
 ```
 
-ブラウザで http://localhost:5173 を開く。
+ブラウザで **http://localhost:5100** を開く（開発サーバーのポートは 5100 に固定済み）。
 
 ## 動作確認（ゴール）
 
 - タスクを追加し、ページをリロードしてもタスクが消えないこと。
-- Firebase Console → Firestore で `todos` コレクションにドキュメントが増えていること。
-- React（state）→ Firestore（addTodo/getTodos/deleteTodo）→ React（setTasks）の流れがコード上で追えること。
+- Firebase Console → Firestore で `lists` / `todos` コレクションにドキュメントが増えていること。
+
+**詳細な手順**（確認項目一覧・手順・エラー時の確認）は **`docs/README.md`** の「5. 動作確認」を参照してください。
 
 ## ディレクトリ構成（フロントエンド）
 
 ```
 Day4/frontend/
 ├── src/
-│   ├── firebase/
-│   │   └── firebase.js    # Firebase 初期化・db の export のみ
-│   ├── services/
-│   │   └── firestore.js   # addTodo / getTodos / deleteTodo
-│   ├── components/
-│   │   └── TodoList.jsx   # タスク一覧表示のみ
+│   ├── firebase/firebase.js      # Firebase 初期化・db の export のみ
+│   ├── services/firestore.js     # getLists, addList, deleteList, getTasks, addTask, updateTask, deleteTask
+│   ├── utils/taskUtils.js
+│   ├── constants/messages.js
+│   ├── components/               # ListSelector, TaskForm, TaskList, TaskItem, Counter, Timer, Memo
 │   ├── App.jsx
 │   └── main.jsx
-├── .env.example           # コピーして .env にリネームし値を入れる
+├── .env.example                  # コピーして .env にリネームし値を入れる
 ├── package.json
 └── vite.config.js
 ```
 
 ## データの流れ
 
-1. **初回表示**: `useEffect` で `getTodos()` → Firestore から取得 → `setTasks` で state 更新 → 画面に表示。
-2. **追加**: フォーム送信 → `addTodo(title)` で Firestore に保存 → `getTodos()` で再取得 → state 更新。
-3. **削除**: 削除ボタン → `deleteTodo(id)` で Firestore から削除 → `getTodos()` で再取得 → state 更新。
+1. **初回表示**: `useEffect` で `getLists()` / `getTasks()` → Firestore から取得 → state 更新 → 画面に表示。
+2. **タスク**: 追加は `addTask()`、更新は `updateTask()`、削除は `deleteTask()` で Firestore に反映 → `getTasks()` で再取得して state 更新。
+3. **リスト**: 追加は `addList()`、削除は `deleteList()`（属するタスクはデフォルトリストに移動）→ `getLists()` / `getTasks()` で再取得。
 
 ## クラウドデプロイ
 
-フロントを Vercel / Netlify へ、バックエンド（任意）を Railway / Render などへデプロイする手順は **`docs/DEPLOYMENT.md`** を参照してください。環境変数（CORS・API ベース URL など）の設定も記載しています。
+フロントを Vercel / Netlify へ、バックエンド（任意）を Railway / Render などへデプロイする手順は **`docs/README.md`** の「7. クラウドデプロイ」を参照してください。環境変数（CORS・API ベース URL など）の設定も記載しています。
 
 ---
 
-Day3 由来の `backend/` や `docs/DESIGN.md` は参考用として残しています。Day4 の動作には **フロントエンドのみ**（Firestore 接続）が必要です。
+設計・データモデル・コンポーネント・Day2 比較などは **`docs/README.md`**（統合ドキュメント）にまとめています。Day3 由来の `backend/` は参考用です。Day4 の動作には **フロントエンドのみ**（Firestore 接続）が必要です。

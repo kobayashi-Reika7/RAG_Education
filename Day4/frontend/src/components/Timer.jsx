@@ -11,9 +11,15 @@ function formatElapsed(seconds) {
 }
 
 function Timer({ taskId, initialTime, onTimeChange }) {
-  const [elapsed, setElapsed] = useState(initialTime || 0);
+  const time = initialTime ?? 0;
+  const [elapsed, setElapsed] = useState(time);
   const [running, setRunning] = useState(false);
   const startRef = useRef(null);
+
+  // Firestore から再取得した time と表示を同期（停止中のみ）
+  useEffect(() => {
+    if (!running) setElapsed(time);
+  }, [time, running]);
 
   useEffect(() => {
     if (!running) return;
@@ -39,6 +45,7 @@ function Timer({ taskId, initialTime, onTimeChange }) {
 
   return (
     <div className="timer-row">
+      <span className="timer-label">タイマー：</span>
       <span className="timer-display">{formatElapsed(elapsed)}</span>
       <div className="timer-btns">
         <button type="button" className="timer-start" onClick={handleStart} disabled={running}>

@@ -1,11 +1,11 @@
 /**
  * リスト選択・追加・削除
- * 選択変更時に onSelect を呼ぶ。追加・削除は親のハンドラを呼ぶ
+ * Day4: list.id は Firestore の文字列 ID。デフォルトリスト（先頭）は削除不可
  */
 import React from 'react';
 
-function ListSelector({ lists, currentListId, onSelect, onAdd, onDelete }) {
-  const isDefault = currentListId === 1;
+function ListSelector({ lists, currentListId, defaultListId, onSelect, onAdd, onDelete }) {
+  const isDefault = defaultListId !== undefined && currentListId === defaultListId;
 
   return (
     <div className="list-section">
@@ -13,7 +13,7 @@ function ListSelector({ lists, currentListId, onSelect, onAdd, onDelete }) {
       <select
         id="listSelect"
         value={currentListId}
-        onChange={(e) => onSelect(Number(e.target.value))}
+        onChange={(e) => onSelect(e.target.value)}
       >
         {lists.map((list) => (
           <option key={list.id} value={list.id}>

@@ -1,12 +1,12 @@
 /**
- * タスク一覧表示（現在リストに属するタスクのみ）
- * 各 TaskItem に onUpdate / onDelete を渡す
+ * タスク一覧（現在リストに属するタスクのみ表示）
+ * 空のときは何も表示しない（シンプルな学習用）
  */
 import React from 'react';
 import TaskItem from './TaskItem';
 
 function TaskList({ tasks, currentListId, onUpdate, onDelete }) {
-  const filtered = tasks.filter((t) => t.list_id === currentListId);
+  const filtered = tasks.filter((t) => (t.list_id ?? '') === currentListId);
 
   return (
     <ul className="task-list">
