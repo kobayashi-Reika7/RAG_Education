@@ -66,7 +66,10 @@ export function subscribeLists(callback, onError) {
       callback(sorted);
     },
     (err) => {
-      console.error('Firestore lists 監視エラー:', err);
+      console.error('Firestore lists 監視エラー:', err?.code, err?.message);
+      if (err?.code === 'permission-denied') {
+        console.error('→ Firestore ルールで read が拒否されています。Firebase Console でルールを確認してください。');
+      }
       if (onError) onError(err);
       callback([]);
     }
@@ -138,11 +141,16 @@ export function subscribeTasks(defaultListId, callback, onError) {
   return onSnapshot(
     ref,
     (snap) => {
+      // ④ 確認用: onSnapshot が実行され、取得件数が分かる（デバッグ後は削除可）
+      console.log('[DEBUG] tasks snapshot:', snap.docs.length, '件');
       const tasks = snap.docs.map((d) => mapDocToTask(d, fallback));
       callback(tasks);
     },
     (err) => {
-      console.error('Firestore tasks 監視エラー:', err);
+      console.error('Firestore tasks 監視エラー:', err?.code, err?.message);
+      if (err?.code === 'permission-denied') {
+        console.error('→ Firestore ルールで read が拒否されています。Firebase Console でルールを確認してください。');
+      }
       if (onError) onError(err);
       callback([]);
     }
@@ -163,7 +171,11 @@ export function addTask({ title, list_id, is_completed = false, is_favorite = fa
     memo: String(memo ?? ''),
     time: Number(time) || 0,
     createdAt: serverTimestamp(),
-  }).then((docRef) => docRef.id);
+  }).then((docRef) => {
+    // ③ 確認用: addDoc 成功時（Firestore に保存された）（デバッグ後は削除可）
+    console.log('[DEBUG] addTask 成功:', docRef.id, 'Firestore の todos にデータがあります');
+    return docRef.id;
+  });
 }
 
 /**

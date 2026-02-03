@@ -209,7 +209,7 @@ npm run dev
 | 画面が真っ白 | F12 の Console でエラー確認。`.env` 未設定・誤りが多い。 |
 | 「読み込みに失敗しました」 | Firestore のルール・ネットワークを確認。 |
 | タスクが増えない | Console のエラー確認。`.env` 変更後は `npm run dev` を再起動。 |
-| リロード後も残らない | Firestore ルールで `lists` / `todos` の読み取りが許可されているか確認。 |
+| リロード後も残らない | Firestore ルールで `lists` / `todos` の読み取りが許可されているか確認。**詳細は `docs/DEBUG_FIRESTORE.md` を参照。** |
 | ポート使用中 | vite.config.js で 5100 が使われているか確認。必要なら 5101 等に変更。 |
 
 ---

@@ -26,6 +26,7 @@ import {
   ERROR_LISTS_FETCH,
   ERROR_LISTS_ADD,
   ERROR_LISTS_DELETE,
+  ERROR_FIRESTORE_RULES,
 } from './constants/messages';
 import Counter from './components/Counter';
 import ListSelector from './components/ListSelector';
@@ -41,38 +42,54 @@ function App() {
   const defaultListId = lists.find((l) => l.name === DEFAULT_LIST_NAME)?.id ?? lists[0]?.id ?? '';
 
   // 初回 + リアルタイム: onSnapshot でリスト・タスクを監視
-  // リロード後も Firestore から確実に取得。orderBy 未使用でインデックス不要
+  // リストを先に反映してからタスクを表示（currentListId 確定でフィルタが正しく動く）
   useEffect(() => {
     setError(null);
+    let unsubTasks = null;
     const unsubLists = subscribeLists(
       (listData) => {
         if (!Array.isArray(listData)) listData = [];
         const hasDefaultList = listData.some((l) => l.name === DEFAULT_LIST_NAME);
         if (listData.length === 0 || !hasDefaultList) {
-          addList(DEFAULT_LIST_NAME).then((created) => {
-            const defaultEntry = { id: created.id, name: created.name };
-            const next = listData.length === 0 ? [defaultEntry] : [defaultEntry, ...listData];
-            setLists(next);
-            setCurrentListId(next[0]?.id ?? '');
-          });
+          addList(DEFAULT_LIST_NAME)
+            .then((created) => {
+              const defaultEntry = { id: created.id, name: created.name };
+              const next = listData.length === 0 ? [defaultEntry] : [defaultEntry, ...listData];
+              setLists(next);
+              setCurrentListId(next[0]?.id ?? '');
+              const firstId = next[0]?.id ?? '';
+              if (unsubTasks) unsubTasks();
+              unsubTasks = subscribeTasks(
+                firstId,
+                (taskList) => {
+                  setError(null);
+                  setTasks(sortTasksByCreatedAt(taskList));
+                },
+                (e) => setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_TASKS_FETCH + ': ' + e.message)
+              );
+            })
+            .catch((e) => setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_LISTS_ADD + ': ' + e.message));
           return;
         }
         setLists(listData);
-        setCurrentListId((prev) => prev || (listData[0]?.id ?? ''));
+        const firstId = listData[0]?.id ?? '';
+        setCurrentListId((prev) => prev || firstId);
+        // リスト確定後にタスク監視を開始（defaultListId を渡して list_id 欠損時を補う）
+        if (unsubTasks) unsubTasks();
+        unsubTasks = subscribeTasks(
+          firstId,
+          (taskList) => {
+            setError(null);
+            setTasks(sortTasksByCreatedAt(taskList));
+          },
+          (e) => setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_TASKS_FETCH + ': ' + e.message)
+        );
       },
-      (e) => setError(ERROR_LISTS_FETCH + ': ' + e.message)
-    );
-    const unsubTasks = subscribeTasks(
-      '',
-      (taskList) => {
-        setError(null);
-        setTasks(sortTasksByCreatedAt(taskList));
-      },
-      (e) => setError(ERROR_TASKS_FETCH + ': ' + e.message)
+      (e) => setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_LISTS_FETCH + ': ' + e.message)
     );
     return () => {
       unsubLists();
-      unsubTasks();
+      if (unsubTasks) unsubTasks();
     };
   }, []);
 
@@ -91,7 +108,7 @@ function App() {
       due_date: null,
       memo: '',
       time: 0,
-    }).catch((e) => setError(ERROR_TASKS_ADD + ': ' + e.message));
+    }).catch((e) => setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_TASKS_ADD + ': ' + e.message));
     // onSnapshot が変更を検知して自動で setTasks するため loadTasks 不要
   };
 

@@ -17,6 +17,7 @@ export const CONFIRM_DELETE_LIST =
 
 /** エラーメッセージ */
 export const ERROR_LOAD_FAILED = '読み込みに失敗しました';
+export const ERROR_FIRESTORE_RULES = 'Firestore のルールで読み取りが拒否されています。Firebase Console でルールを確認してください。';
 export const ERROR_LIST_NOT_READY = 'リストが読み込まれるまで追加できません。';
 export const ERROR_TASKS_FETCH = 'タスクの取得に失敗しました';
 export const ERROR_TASKS_ADD = 'タスクの追加に失敗しました';
