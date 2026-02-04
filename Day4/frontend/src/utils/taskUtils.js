@@ -2,7 +2,7 @@
  * タスク関連のユーティリティ（VERIFICATION の確認項目 3,6 等に対応）
  * - getDueState: 期限の状態（none / ok / overdue）
  * - computeCounts: 未完了・完了・お気に入り・期限切れの件数
- * - sortTasksByCreatedAt: 作成日時の新しい順でソート
+ * - sortTasksByCreatedAt: 未完了を上（新しい順）、完了を下（新しい順）でソート
  */
 
 /**
@@ -31,14 +31,20 @@ export function computeCounts(tasks) {
 }
 
 /**
- * 作成日時の新しい順でタスクをソート（Firestore Timestamp 対応）
- * @param {Array<{createdAt?: {toMillis?: ()=>number}|number|null}>} tasks
+ * タスクを表示用にソート（未完了を上・新しい順、完了を一番下・新しい順）
+ * - 未完了（is_completed: false）を上に、完了を下にまとめる
+ * - 同じ状態内では createdAt の新しい順（追加タスクが一番上）
+ * - createdAt 未設定（serverTimestamp 反映前）は「最新」として先頭側に
+ * @param {Array<{is_completed?: boolean, createdAt?: {toMillis?: ()=>number}|number|null}>} tasks
  * @returns {Array}
  */
 export function sortTasksByCreatedAt(tasks) {
   return [...tasks].sort((a, b) => {
-    const tA = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt ?? 0);
-    const tB = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt ?? 0);
+    if (a.is_completed !== b.is_completed) {
+      return a.is_completed ? 1 : -1;
+    }
+    const tA = a.createdAt?.toMillis ? a.createdAt.toMillis() : (a.createdAt ?? Infinity);
+    const tB = b.createdAt?.toMillis ? b.createdAt.toMillis() : (b.createdAt ?? Infinity);
     return tB - tA;
   });
 }
