@@ -1,15 +1,13 @@
 /**
- * Firestore の保存・取得（学習用シンプル仕様）
- * - lists: リスト一覧（デフォルト「マイリスト」を1件持つ）
- * - todos: タスク（title, list_id 必須。完了・お気に入り・期限・メモ・タイマーは任意）
- *
- * 【リロード後も残る】onSnapshot でリアルタイム監視。orderBy は使わずクライアントでソート（インデックス不要）。
+ * Firestore を唯一のデータソースとする CRUD
+ * 変更理由: collection を "tasks" に統一。getTasks / addTask / updateTask / deleteTask を提供し、
+ * ローカル配列の push ではなく Firestore への書き込み → 再取得で state を更新する構成にする。
+ * リスト用は getLists / addList / deleteList（リスト選択 UI 用）。
  */
 import {
   collection,
   addDoc,
   getDocs,
-  onSnapshot,
   deleteDoc,
   doc,
   updateDoc,
@@ -21,9 +19,9 @@ import {
 import { db } from '../firebase/firebase';
 
 const LISTS = 'lists';
-const TASKS = 'todos';
+const TASKS = 'tasks';
 
-// ========== リスト ==========
+// ========== リスト（リスト選択 UI 用） ==========
 
 const DEFAULT_LIST_NAME = 'マイリスト';
 
@@ -40,40 +38,6 @@ export function getLists() {
       return aDefault - bDefault;
     });
   });
-}
-
-/**
- * リストをリアルタイム監視（onSnapshot）
- * リロード後も確実にデータを取得。orderBy 未使用でインデックス不要。
- * @param {function(lists: Array<{id, name}>): void} callback
- * @param {function(error: Error): void} [onError]
- * @returns {function} unsubscribe
- */
-export function subscribeLists(callback, onError) {
-  const ref = collection(db, LISTS);
-  return onSnapshot(
-    ref,
-    (snap) => {
-      const items = snap.docs.map((d) => ({
-        id: d.id,
-        name: (d.data().name ?? '').trim() || '（無題）',
-      }));
-      const sorted = [...items].sort((a, b) => {
-        const aDefault = a.name === DEFAULT_LIST_NAME ? 0 : 1;
-        const bDefault = b.name === DEFAULT_LIST_NAME ? 0 : 1;
-        return aDefault - bDefault;
-      });
-      callback(sorted);
-    },
-    (err) => {
-      console.error('Firestore lists 監視エラー:', err?.code, err?.message);
-      if (err?.code === 'permission-denied') {
-        console.error('→ Firestore ルールで read が拒否されています。Firebase Console でルールを確認してください。');
-      }
-      if (onError) onError(err);
-      callback([]);
-    }
-  );
 }
 
 export function addList(name) {
@@ -99,16 +63,15 @@ export function deleteList(listId, defaultListId) {
     .then(() => deleteDoc(doc(db, LISTS, listId)));
 }
 
-// ========== タスク（保存・取得を確実に） ==========
+// ========== タスク（Firestore を唯一のデータソース） ==========
 
 /**
- * 全タスクを取得。list_id がないドキュメントは defaultListId で補う
+ * 全タスクを1回取得。list_id 欠損時は fallbackListId で補う。
  */
-export function getTasks(defaultListId) {
+export function getTasks(fallbackListId = '') {
   const ref = collection(db, TASKS);
-  const fallback = defaultListId ?? '';
   return getDocs(ref).then((snap) =>
-    snap.docs.map((d) => mapDocToTask(d, fallback))
+    snap.docs.map((d) => mapDocToTask(d, fallbackListId))
   );
 }
 
@@ -128,37 +91,7 @@ function mapDocToTask(d, fallbackListId) {
 }
 
 /**
- * タスクをリアルタイム監視（onSnapshot）
- * リロード後も確実にデータを取得。orderBy 未使用でインデックス不要。
- * @param {string} defaultListId - list_id 欠損時のフォールバック
- * @param {function(tasks: Array): void} callback
- * @param {function(error: Error): void} [onError]
- * @returns {function} unsubscribe
- */
-export function subscribeTasks(defaultListId, callback, onError) {
-  const ref = collection(db, TASKS);
-  const fallback = defaultListId ?? '';
-  return onSnapshot(
-    ref,
-    (snap) => {
-      // ④ 確認用: onSnapshot が実行され、取得件数が分かる（デバッグ後は削除可）
-      console.log('[DEBUG] tasks snapshot:', snap.docs.length, '件');
-      const tasks = snap.docs.map((d) => mapDocToTask(d, fallback));
-      callback(tasks);
-    },
-    (err) => {
-      console.error('Firestore tasks 監視エラー:', err?.code, err?.message);
-      if (err?.code === 'permission-denied') {
-        console.error('→ Firestore ルールで read が拒否されています。Firebase Console でルールを確認してください。');
-      }
-      if (onError) onError(err);
-      callback([]);
-    }
-  );
-}
-
-/**
- * タスクを1件追加（必須: title, list_id）
+ * タスクを1件追加。Firestore に保存するだけ（state 更新は App で getTasks 再実行）。
  */
 export function addTask({ title, list_id, is_completed = false, is_favorite = false, due_date = null, memo = '', time = 0 }) {
   const ref = collection(db, TASKS);
@@ -171,15 +104,11 @@ export function addTask({ title, list_id, is_completed = false, is_favorite = fa
     memo: String(memo ?? ''),
     time: Number(time) || 0,
     createdAt: serverTimestamp(),
-  }).then((docRef) => {
-    // ③ 確認用: addDoc 成功時（Firestore に保存された）（デバッグ後は削除可）
-    console.log('[DEBUG] addTask 成功:', docRef.id, 'Firestore の todos にデータがあります');
-    return docRef.id;
-  });
+  }).then((docRef) => docRef.id);
 }
 
 /**
- * タスクを更新（渡したフィールドだけ上書き）
+ * タスクを更新。Firestore に反映（state 更新は App で getTasks 再実行）。
  */
 export function updateTask(id, data) {
   const ref = doc(db, TASKS, id);
@@ -189,7 +118,7 @@ export function updateTask(id, data) {
 }
 
 /**
- * タスクを1件削除
+ * タスクを1件削除。Firestore から削除（state 更新は App で getTasks 再実行）。
  */
 export function deleteTask(id) {
   return deleteDoc(doc(db, TASKS, id));

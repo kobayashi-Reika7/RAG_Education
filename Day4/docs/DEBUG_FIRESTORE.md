@@ -6,6 +6,61 @@
 
 ---
 
+## 再起動後もデータが表示される仕組み
+
+| データ | 保存先 | 再起動後 |
+|--------|--------|----------|
+| タスク・リスト一覧 | **Firestore**（クラウド） | ブラウザ／サーバー再起動後もそのまま表示 |
+| 選択中のリスト | **localStorage**（day4_currentListId） | リロード後も同じリストを表示 |
+| オフライン用キャッシュ | **IndexedDB**（enableIndexedDbPersistence） | リロード時にキャッシュから即表示し、その後サーバーと同期 |
+
+### 再起動・別タブで「表示件数が0」になる対策
+
+フロント／バックエンド再起動後や別タブで開いたときに、次の 2 要因で 0 件表示になることがあります。
+
+1. **キャッシュのみで「読み込み完了」になる**  
+   - **対策:** `onSnapshot` の `snapshot.metadata.fromCache` を参照し、**サーバー由来のスナップショット（fromCache === false）が1回でも届いたときだけ**「読み込み完了」にしている（App.jsx の `listsLoaded` / `tasksSnapshotReceived`）。  
+   - **フォールバック:** オフラインや遅延時は最大 8 秒で「読み込み完了」にし、スピナーが無限に続かないようにしている。
+
+2. **新タブで currentListId が空のままメイン UI が出る**  
+   - 新タブでは localStorage が別オリジン（localhost vs 127.0.0.1）で空だったり、リスト到着前に 8 秒タイムアウトで「読み込み完了」になり、`listId` が '' のままメイン UI が表示され、タスクを購読せず 0 件になる。  
+   - **対策:** 有効な `currentListId` または `defaultListId` が決まるまでメイン UI を出さない（`hasValidListId` を `isLoading` に含めている）。  
+   - **詳細:** [TAB_ZERO_ISSUE.md](./TAB_ZERO_ISSUE.md) に原因・再現条件・解決策を記載。
+
+---
+
+## 再起動後にデータが出ない場合の確認
+
+次の 3 項目を順に確認してください。
+
+### 1. Day4/frontend/.env に VITE_FIREBASE_* が正しく設定されているか
+
+| 変数名 | 内容 | 確認方法 |
+|--------|------|----------|
+| `VITE_FIREBASE_API_KEY` | Firebase API キー | 空でないこと |
+| `VITE_FIREBASE_AUTH_DOMAIN` | 認証ドメイン（例: xxx.firebaseapp.com） | 空でないこと |
+| `VITE_FIREBASE_PROJECT_ID` | プロジェクト ID | 空でないこと（必須） |
+| `VITE_FIREBASE_STORAGE_BUCKET` | ストレージバケット | 空でないこと |
+| `VITE_FIREBASE_MESSAGING_SENDER_ID` | メッセージング送信者 ID | 空でないこと |
+| `VITE_FIREBASE_APP_ID` | アプリ ID | 空でないこと |
+
+- **手順:** `Day4/frontend/.env.example` をコピーして `Day4/frontend/.env` を作成し、Firebase Console の「プロジェクトの設定」→「一般」から各値をコピーして貼る。
+- **確認（スクリプト）:** `Day4/frontend` で `.\check-env.ps1` を実行すると、VITE_FIREBASE_* がすべて設定されているか検証できる。
+- **確認（ブラウザ）:** 開発者ツール（F12）→ Console に `[Firebase] VITE_FIREBASE_PROJECT_ID が undefined です` と出ていれば .env が未設定または未読込。
+
+### 2. .env を変えたあと、npm run dev を再起動したか
+
+- Vite は起動時に .env を読み込むため、**変更後は必ず `npm run dev` を止めてから再度起動**する。
+- **手順:** ターミナルで Ctrl+C → `cd Day4/frontend` → `npm run dev`。
+
+### 3. Firebase Console の Firestore ルールで read が許可されているか
+
+- **手順:** [Firebase Console](https://console.firebase.google.com/) → プロジェクト選択 → 「Firestore Database」→「ルール」タブ。
+- **例（開発用）:** `rules_version = '2'; service cloud.firestore { match /databases/{database}/documents { match /{document=**} { allow read, write: if true; } } }`
+- **確認:** ブラウザ Console に `permission-denied` や「ルールで読み取りが拒否」と出ていればルールを修正する。
+
+---
+
 ## ① Firestore 接続確認
 
 ### チェック項目

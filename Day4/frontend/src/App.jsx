@@ -1,14 +1,15 @@
 /**
- * App: 全体の状態保持と Firestore 連携
- * VERIFICATION.md の確認項目（タスク追加・完了・編集・リスト・リロード等）に沿った構成
- * currentListId は localStorage に保存し、複数タブ間で共有する
+ * App: Firestore を唯一のデータソースとする ToDo
+ * 変更理由: useState だけで完結させず、useEffect で getTasks() を1回だけ実行し取得データを state に反映。
+ * タスク追加・更新・削除時は Firestore に保存してから getTasks() で再取得し state を更新。
+ * ダミーデータ・初期配列の push のみの処理は削除。React は「表示と操作」のみ担当。
  */
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 
 const STORAGE_KEY_CURRENT_LIST = 'day4_currentListId';
 import {
-  subscribeLists,
-  subscribeTasks,
+  getLists,
+  getTasks,
   addTask,
   updateTask,
   deleteTask,
@@ -47,22 +48,19 @@ function App() {
     }
   });
   const [error, setError] = useState(null);
-  // このセッションで削除したリストID（onSnapshot の古いデータでプルダウンに戻るのを防ぐ）
-  const deletedListIdsRef = useRef(new Set());
+  const [listsLoaded, setListsLoaded] = useState(false);
 
   const defaultListId = lists.find((l) => l.name === DEFAULT_LIST_NAME)?.id ?? lists[0]?.id ?? '';
+  const listId = currentListId || defaultListId;
+  const isLoading = !listsLoaded || lists.length === 0;
 
-  // currentListId を localStorage に保存（タブ間共有のため）
   useEffect(() => {
     if (!currentListId) return;
     try {
       localStorage.setItem(STORAGE_KEY_CURRENT_LIST, currentListId);
-    } catch {
-      // プライベートモード等で書き込めない場合は無視
-    }
+    } catch {}
   }, [currentListId]);
 
-  // 他タブで currentListId が変更されたらこのタブも同期する
   useEffect(() => {
     const onStorage = (e) => {
       if (e.key !== STORAGE_KEY_CURRENT_LIST || e.newValue == null) return;
@@ -72,29 +70,21 @@ function App() {
     return () => window.removeEventListener('storage', onStorage);
   }, []);
 
-  // 初回 + リアルタイム: onSnapshot でリストを監視
+  // リストを1回だけ Firestore から取得（唯一のデータソース。依存 [] で二重読込防止）
   useEffect(() => {
     setError(null);
-    const unsubLists = subscribeLists(
-      (listData) => {
-        if (!Array.isArray(listData)) listData = [];
-        const hasDefaultList = listData.some((l) => l.name === DEFAULT_LIST_NAME);
-        if (listData.length === 0 || !hasDefaultList) {
-          addList(DEFAULT_LIST_NAME)
-            .then((created) => {
-              const defaultEntry = { id: created.id, name: created.name };
-              const raw = listData.length === 0 ? [defaultEntry] : [defaultEntry, ...listData];
-              const next = raw.filter((l) => !deletedListIdsRef.current.has(l.id));
-              setLists(next);
-              const firstId = next[0]?.id ?? '';
-              setCurrentListId(firstId);
-            })
-            .catch((e) => setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_LISTS_ADD + ': ' + e.message));
-          return;
+    getLists()
+      .then((listData) => {
+        if (!Array.isArray(listData)) return [];
+        if (listData.length === 0) {
+          return addList(DEFAULT_LIST_NAME).then(() => getLists());
         }
-        const filtered = listData.filter((l) => !deletedListIdsRef.current.has(l.id));
-        setLists(filtered);
-        const firstId = filtered[0]?.id ?? '';
+        return listData;
+      })
+      .then((listData) => {
+        if (!listData || listData.length === 0) return;
+        setLists(listData);
+        const firstId = listData[0]?.id ?? '';
         const savedId = (() => {
           try {
             return localStorage.getItem(STORAGE_KEY_CURRENT_LIST) || '';
@@ -102,32 +92,35 @@ function App() {
             return '';
           }
         })();
-        const savedStillExists = savedId && filtered.some((l) => l.id === savedId);
+        const savedStillExists = savedId && listData.some((l) => l.id === savedId);
         setCurrentListId(savedStillExists ? savedId : firstId);
-      },
-      (e) => setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_LISTS_FETCH + ': ' + e.message)
-    );
-    return () => unsubLists();
+      })
+      .then(() => setListsLoaded(true))
+      .catch((e) => {
+        setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_LISTS_FETCH + ': ' + e.message);
+        setListsLoaded(true);
+      });
   }, []);
 
-  // タブ（リスト）切り替え時も即時連携: currentListId または defaultListId が決まり次第タスクを購読
+  // タスクを listId が決まったとき1回だけ Firestore から取得（二重読込防止: 依存は listId のみ）
   useEffect(() => {
-    const listId = currentListId || defaultListId;
     if (!listId) return;
     setError(null);
-    const unsubTasks = subscribeTasks(
-      listId,
-      (taskList) => {
-        setError(null);
-        setTasks(sortTasksByCreatedAt(taskList));
-      },
-      (e) => setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_TASKS_FETCH + ': ' + e.message)
-    );
-    return () => unsubTasks();
-  }, [currentListId, defaultListId]);
+    getTasks(listId)
+      .then((taskList) => setTasks(sortTasksByCreatedAt(taskList)))
+      .catch((e) => {
+        setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_TASKS_FETCH + ': ' + e.message);
+      });
+  }, [listId]);
+
+  const refreshTasks = () => {
+    if (!listId) return;
+    getTasks(listId)
+      .then((taskList) => setTasks(sortTasksByCreatedAt(taskList)))
+      .catch((e) => setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_TASKS_FETCH + ': ' + e.message));
+  };
 
   const handleAddTask = (title) => {
-    const listId = currentListId || defaultListId;
     if (!listId) {
       setError(ERROR_LIST_NOT_READY);
       return;
@@ -141,20 +134,23 @@ function App() {
       due_date: null,
       memo: '',
       time: 0,
-    }).catch((e) => setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_TASKS_ADD + ': ' + e.message));
-    // onSnapshot が変更を検知して自動で setTasks するため loadTasks 不要
+    })
+      .then(() => refreshTasks())
+      .catch((e) => setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_TASKS_ADD + ': ' + e.message));
   };
 
   const handleUpdateTask = (id, data) => {
     setError(null);
-    updateTask(id, data).catch((e) => setError(ERROR_TASKS_UPDATE + ': ' + e.message));
-    // onSnapshot が変更を検知して自動で setTasks するため loadTasks 不要
+    updateTask(id, data)
+      .then(() => refreshTasks())
+      .catch((e) => setError(ERROR_TASKS_UPDATE + ': ' + e.message));
   };
 
   const handleDeleteTask = (id) => {
     setError(null);
-    deleteTask(id).catch((e) => setError(ERROR_TASKS_DELETE + ': ' + e.message));
-    // onSnapshot が変更を検知して自動で setTasks するため loadTasks 不要
+    deleteTask(id)
+      .then(() => refreshTasks())
+      .catch((e) => setError(ERROR_TASKS_DELETE + ': ' + e.message));
   };
 
   const handleAddList = () => {
@@ -162,9 +158,11 @@ function App() {
     if (!name?.trim()) return;
     setError(null);
     addList(name.trim())
-      .then((created) => setCurrentListId(created.id))
+      .then((created) => {
+        setCurrentListId(created.id);
+        return getLists().then(setLists);
+      })
       .catch((e) => setError(ERROR_LISTS_ADD + ': ' + e.message));
-    // onSnapshot が変更を検知して自動で setLists するため loadLists 不要
   };
 
   const handleDeleteList = () => {
@@ -174,22 +172,27 @@ function App() {
     }
     if (!window.confirm(CONFIRM_DELETE_LIST)) return;
     setError(null);
-    const deletedId = currentListId;
-    // 楽観的更新: 先にプルダウンと選択を更新し、後で Firestore 削除（onSnapshot の遅延で戻るのを防ぐ）
-    deletedListIdsRef.current.add(deletedId);
-    setCurrentListId(defaultListId);
-    setLists((prev) => prev.filter((l) => l.id !== deletedId));
+    const prevDefaultId = defaultListId;
+    setCurrentListId(prevDefaultId);
     try {
-      localStorage.setItem(STORAGE_KEY_CURRENT_LIST, defaultListId);
-    } catch {
-      // 保存失敗時は無視
-    }
-    deleteList(deletedId, defaultListId).catch((e) =>
-      setError(ERROR_LISTS_DELETE + ': ' + e.message)
-    );
+      localStorage.setItem(STORAGE_KEY_CURRENT_LIST, prevDefaultId);
+    } catch {}
+    deleteList(currentListId, prevDefaultId)
+      .then(() => getLists().then(setLists))
+      .catch((e) => setError(ERROR_LISTS_DELETE + ': ' + e.message));
   };
 
   const counts = computeCounts(tasks);
+
+  if (isLoading) {
+    return (
+      <div className="app-container">
+        <h1>ToDoアプリ</h1>
+        {error && <p className="app-error">{error}</p>}
+        <p className="app-loading">読み込み中…</p>
+      </div>
+    );
+  }
 
   return (
     <div className="app-container">
