@@ -54,6 +54,8 @@ git branch && git checkout ai-generated 2>/dev/null || git checkout -b ai-genera
 
 ### ✅ 必ずやること（最重要）
 
+**ログの記録とGit運用は毎回欠かさず行う。**
+
 #### 🚨 作業前：Gitブランチ切り替え
 **どんな作業でも、最初に必ず以下を実行：**
 ```bash
@@ -85,6 +87,8 @@ TypeScriptで実装してください
 
 **ルール：**
 - 時刻は**日本時間（JST）**で記録
+- **AIは記録時にターミナルでJSTを取得してから記録すること**（推測で時刻を入れない）
+  - Windows例: `powershell -Command "[System.TimeZoneInfo]::ConvertTimeFromUtc(([DateTime]::UtcNow), [System.TimeZoneInfo]::FindSystemTimeZoneById('Tokyo Standard Time')).ToString('yyyy/MM/dd HH:mm:ss')"`
 - プロンプト内容は**そのまま**記録（編集・要約しない）
 - 同じ日付なら同じファイルに**追記**する
 - ファイルがなければ新規作成
