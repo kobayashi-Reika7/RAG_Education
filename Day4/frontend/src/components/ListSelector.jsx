@@ -6,13 +6,17 @@ import React from 'react';
 
 function ListSelector({ lists, currentListId, defaultListId, onSelect, onAdd, onDelete }) {
   const isDefault = defaultListId !== undefined && currentListId === defaultListId;
+  // 削除後などで currentListId が lists に無い場合は表示用に defaultListId を使う
+  const selectValue = lists.some((l) => l.id === currentListId)
+    ? currentListId
+    : (defaultListId || lists[0]?.id || '');
 
   return (
     <div className="list-section">
       <label htmlFor="listSelect">リスト：</label>
       <select
         id="listSelect"
-        value={currentListId}
+        value={selectValue}
         onChange={(e) => onSelect(e.target.value)}
       >
         {lists.map((list) => (

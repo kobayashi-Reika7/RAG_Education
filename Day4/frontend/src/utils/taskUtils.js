@@ -19,6 +19,7 @@ export function getDueState(dueDate) {
 
 /**
  * タスク一覧からカウンター用の件数を算出
+ * 期限切れは「未完了かつ期限切れ」のみカウント（完了済みの期限切れは含めない）
  * @param {Array<{is_completed?: boolean, is_favorite?: boolean, due_date?: string|null}>} tasks
  * @returns {{ incomplete: number, completed: number, favorite: number, overdue: number }}
  */
@@ -26,7 +27,9 @@ export function computeCounts(tasks) {
   const incomplete = tasks.filter((t) => !t.is_completed).length;
   const completed = tasks.filter((t) => t.is_completed).length;
   const favorite = tasks.filter((t) => t.is_favorite).length;
-  const overdue = tasks.filter((t) => getDueState(t.due_date) === 'overdue').length;
+  const overdue = tasks.filter(
+    (t) => !t.is_completed && getDueState(t.due_date) === 'overdue'
+  ).length;
   return { incomplete, completed, favorite, overdue };
 }
 

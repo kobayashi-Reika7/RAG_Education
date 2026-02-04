@@ -175,18 +175,18 @@ function App() {
     if (!window.confirm(CONFIRM_DELETE_LIST)) return;
     setError(null);
     const deletedId = currentListId;
-    deleteList(currentListId, defaultListId)
-      .then(() => {
-        deletedListIdsRef.current.add(deletedId);
-        setCurrentListId(defaultListId);
-        setLists((prev) => prev.filter((l) => l.id !== deletedId));
-        try {
-          localStorage.setItem(STORAGE_KEY_CURRENT_LIST, defaultListId);
-        } catch {
-          // 保存失敗時は無視
-        }
-      })
-      .catch((e) => setError(ERROR_LISTS_DELETE + ': ' + e.message));
+    // 楽観的更新: 先にプルダウンと選択を更新し、後で Firestore 削除（onSnapshot の遅延で戻るのを防ぐ）
+    deletedListIdsRef.current.add(deletedId);
+    setCurrentListId(defaultListId);
+    setLists((prev) => prev.filter((l) => l.id !== deletedId));
+    try {
+      localStorage.setItem(STORAGE_KEY_CURRENT_LIST, defaultListId);
+    } catch {
+      // 保存失敗時は無視
+    }
+    deleteList(deletedId, defaultListId).catch((e) =>
+      setError(ERROR_LISTS_DELETE + ': ' + e.message)
+    );
   };
 
   const counts = computeCounts(tasks);
