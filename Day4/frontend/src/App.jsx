@@ -1,8 +1,11 @@
 /**
  * App: 全体の状態保持と Firestore 連携
  * VERIFICATION.md の確認項目（タスク追加・完了・編集・リスト・リロード等）に沿った構成
+ * currentListId は localStorage に保存し、複数タブ間で共有する
  */
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+
+const STORAGE_KEY_CURRENT_LIST = 'day4_currentListId';
 import {
   subscribeLists,
   subscribeTasks,
@@ -36,16 +39,42 @@ import TaskList from './components/TaskList';
 function App() {
   const [tasks, setTasks] = useState([]);
   const [lists, setLists] = useState([]);
-  const [currentListId, setCurrentListId] = useState('');
+  const [currentListId, setCurrentListId] = useState(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEY_CURRENT_LIST) || '';
+    } catch {
+      return '';
+    }
+  });
   const [error, setError] = useState(null);
+  // このセッションで削除したリストID（onSnapshot の古いデータでプルダウンに戻るのを防ぐ）
+  const deletedListIdsRef = useRef(new Set());
 
   const defaultListId = lists.find((l) => l.name === DEFAULT_LIST_NAME)?.id ?? lists[0]?.id ?? '';
 
-  // 初回 + リアルタイム: onSnapshot でリスト・タスクを監視
-  // リストを先に反映してからタスクを表示（currentListId 確定でフィルタが正しく動く）
+  // currentListId を localStorage に保存（タブ間共有のため）
+  useEffect(() => {
+    if (!currentListId) return;
+    try {
+      localStorage.setItem(STORAGE_KEY_CURRENT_LIST, currentListId);
+    } catch {
+      // プライベートモード等で書き込めない場合は無視
+    }
+  }, [currentListId]);
+
+  // 他タブで currentListId が変更されたらこのタブも同期する
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (e.key !== STORAGE_KEY_CURRENT_LIST || e.newValue == null) return;
+      setCurrentListId(e.newValue);
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
+  // 初回 + リアルタイム: onSnapshot でリストを監視
   useEffect(() => {
     setError(null);
-    let unsubTasks = null;
     const unsubLists = subscribeLists(
       (listData) => {
         if (!Array.isArray(listData)) listData = [];
@@ -54,44 +83,48 @@ function App() {
           addList(DEFAULT_LIST_NAME)
             .then((created) => {
               const defaultEntry = { id: created.id, name: created.name };
-              const next = listData.length === 0 ? [defaultEntry] : [defaultEntry, ...listData];
+              const raw = listData.length === 0 ? [defaultEntry] : [defaultEntry, ...listData];
+              const next = raw.filter((l) => !deletedListIdsRef.current.has(l.id));
               setLists(next);
-              setCurrentListId(next[0]?.id ?? '');
               const firstId = next[0]?.id ?? '';
-              if (unsubTasks) unsubTasks();
-              unsubTasks = subscribeTasks(
-                firstId,
-                (taskList) => {
-                  setError(null);
-                  setTasks(sortTasksByCreatedAt(taskList));
-                },
-                (e) => setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_TASKS_FETCH + ': ' + e.message)
-              );
+              setCurrentListId(firstId);
             })
             .catch((e) => setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_LISTS_ADD + ': ' + e.message));
           return;
         }
-        setLists(listData);
-        const firstId = listData[0]?.id ?? '';
-        setCurrentListId((prev) => prev || firstId);
-        // リスト確定後にタスク監視を開始（defaultListId を渡して list_id 欠損時を補う）
-        if (unsubTasks) unsubTasks();
-        unsubTasks = subscribeTasks(
-          firstId,
-          (taskList) => {
-            setError(null);
-            setTasks(sortTasksByCreatedAt(taskList));
-          },
-          (e) => setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_TASKS_FETCH + ': ' + e.message)
-        );
+        const filtered = listData.filter((l) => !deletedListIdsRef.current.has(l.id));
+        setLists(filtered);
+        const firstId = filtered[0]?.id ?? '';
+        const savedId = (() => {
+          try {
+            return localStorage.getItem(STORAGE_KEY_CURRENT_LIST) || '';
+          } catch {
+            return '';
+          }
+        })();
+        const savedStillExists = savedId && filtered.some((l) => l.id === savedId);
+        setCurrentListId(savedStillExists ? savedId : firstId);
       },
       (e) => setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_LISTS_FETCH + ': ' + e.message)
     );
-    return () => {
-      unsubLists();
-      if (unsubTasks) unsubTasks();
-    };
+    return () => unsubLists();
   }, []);
+
+  // タブ（リスト）切り替え時も即時連携: currentListId または defaultListId が決まり次第タスクを購読
+  useEffect(() => {
+    const listId = currentListId || defaultListId;
+    if (!listId) return;
+    setError(null);
+    const unsubTasks = subscribeTasks(
+      listId,
+      (taskList) => {
+        setError(null);
+        setTasks(sortTasksByCreatedAt(taskList));
+      },
+      (e) => setError(e?.code === 'permission-denied' ? ERROR_FIRESTORE_RULES : ERROR_TASKS_FETCH + ': ' + e.message)
+    );
+    return () => unsubTasks();
+  }, [currentListId, defaultListId]);
 
   const handleAddTask = (title) => {
     const listId = currentListId || defaultListId;
@@ -141,10 +174,19 @@ function App() {
     }
     if (!window.confirm(CONFIRM_DELETE_LIST)) return;
     setError(null);
+    const deletedId = currentListId;
     deleteList(currentListId, defaultListId)
-      .then(() => setCurrentListId(defaultListId))
+      .then(() => {
+        deletedListIdsRef.current.add(deletedId);
+        setCurrentListId(defaultListId);
+        setLists((prev) => prev.filter((l) => l.id !== deletedId));
+        try {
+          localStorage.setItem(STORAGE_KEY_CURRENT_LIST, defaultListId);
+        } catch {
+          // 保存失敗時は無視
+        }
+      })
       .catch((e) => setError(ERROR_LISTS_DELETE + ': ' + e.message));
-    // onSnapshot が変更を検知して自動で setLists / setTasks するため loadLists / loadTasks 不要
   };
 
   const counts = computeCounts(tasks);
