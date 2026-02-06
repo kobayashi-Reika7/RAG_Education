@@ -49,6 +49,8 @@ export default function DepartmentListSelector({ selectedLabel = '', onSelect })
             <div className="dept-selector-grid" role="list">
               {departments.map((dept) => {
                 const isSelected = selectable && dept.label === selected;
+                const noWrap = dept.label === '画像診断・検査';
+                const textClass = `dept-selector-btn-text${noWrap ? ' dept-selector-text-nowrap' : ''}`;
                 return (
                   <div key={dept.id} className="dept-selector-item-wrap" role="listitem">
                     {selectable ? (
@@ -59,14 +61,14 @@ export default function DepartmentListSelector({ selectedLabel = '', onSelect })
                         aria-label={`${dept.label}${isSelected ? 'を選択中' : 'を選択'}`}
                         onClick={() => onSelect(dept.label)}
                       >
-                        <span className="dept-selector-btn-text">{dept.label}</span>
+                        <span className={textClass}>{dept.label}</span>
                         {isSelected && (
                           <span className="dept-selector-btn-check" aria-hidden>✓</span>
                         )}
                       </button>
                     ) : (
                       <span className="dept-selector-item">
-                        <span className="dept-selector-btn-text">{dept.label}</span>
+                        <span className={textClass}>{dept.label}</span>
                       </span>
                     )}
                   </div>

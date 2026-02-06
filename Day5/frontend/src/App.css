@@ -2291,6 +2291,10 @@ body {
   word-break: keep-all;
 }
 
+.dept-selector-text-nowrap {
+  white-space: nowrap;
+}
+
 .dept-selector-btn-check {
   flex-shrink: 0;
   margin-left: 0.35rem;
