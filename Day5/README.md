@@ -5,6 +5,13 @@
 - リモート: https://github.com/kobayashi-Reika7/Reservation-Calendar.git
 - 開発時は親プロジェクトの `.cursorrules` に従う（ブランチ `ai-generated` / `main` 運用）
 
+### Reservation-Calendar の main に上げる
+
+親リポジトリ（Realice）で Day5 を [Reservation-Calendar](https://github.com/kobayashi-Reika7/Reservation-Calendar) の main にプッシュする:
+
+- **方法1**: `Day5/push-to-Reservation-Calendar.bat` をダブルクリック（Realice がカレントでなくても可）
+- **方法2**: Realice のルートで `git subtree push --prefix=Day5 calendar main`（リモート `calendar` が未追加のときは `git remote add calendar https://github.com/kobayashi-Reika7/Reservation-Calendar.git` を先に実行）
+
 ## 予約アプリ（フロントエンド）
 
 - **技術**: React, Vite, Firebase（Authentication / Firestore）, react-router-dom
