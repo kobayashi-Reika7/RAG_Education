@@ -1,0 +1,13 @@
+rules_version = '2';
+// 予約アプリ用 Firestore セキュリティルール
+// パス: users/{uid}/reservations/{reservationId}
+// 認証済みユーザーは自分の uid 配下のみ書き込み可能
+// 読取は認証済みなら全ユーザー可（collectionGroup で「予約済み担当医」照合用）
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid}/reservations/{reservationId} {
+      allow read: if request.auth != null;
+      allow create, delete, update: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}

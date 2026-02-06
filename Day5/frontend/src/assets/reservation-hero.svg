@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 80" fill="none" aria-hidden="true">
+  <defs>
+    <linearGradient id="med-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e0f2fe"/>
+      <stop offset="100%" stop-color="#f0fdf4"/>
+    </linearGradient>
+  </defs>
+  <rect width="120" height="80" rx="12" fill="url(#med-bg)"/>
+  <!-- Calendar -->
+  <rect x="24" y="18" width="42" height="36" rx="4" fill="#fff" stroke="#0ea5e9" stroke-width="1.5"/>
+  <rect x="24" y="18" width="42" height="10" rx="4" fill="#0ea5e9"/>
+  <line x1="39" y1="34" x2="39" y2="48" stroke="#64748b" stroke-width="1"/>
+  <line x1="51" y1="34" x2="51" y2="48" stroke="#64748b" stroke-width="1"/>
+  <!-- Cross (medical) -->
+  <circle cx="82" cy="36" r="14" fill="#fff" stroke="#059669" stroke-width="2"/>
+  <line x1="82" y1="28" x2="82" y2="44" stroke="#059669" stroke-width="2" stroke-linecap="round"/>
+  <line x1="76" y1="36" x2="88" y2="36" stroke="#059669" stroke-width="2" stroke-linecap="round"/>
+  <!-- Check -->
+  <path d="M70 58 L74 62 L82 52" stroke="#059669" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
