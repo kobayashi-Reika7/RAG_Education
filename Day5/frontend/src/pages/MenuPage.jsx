@@ -6,8 +6,7 @@ import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import Breadcrumb from '../components/Breadcrumb';
 import { logout } from '../services/auth';
-import appHero from '../assets/app-hero.svg';
-
+const TOP_IMAGE = '/top.jpg';
 const MENU_TITLE = 'ご予約メニュー';
 const MENU_LEAD = 'かんたん予約、またはご予約内容の確認ができます。';
 
@@ -34,7 +33,7 @@ function MenuPage() {
 
       <header className="menu-header">
         <div className="menu-hero">
-          <img src={appHero} alt="" className="menu-hero-img app-hero-img" width="160" height="80" />
+          <img src={TOP_IMAGE} alt="さくら総合病院" className="menu-hero-img" />
         </div>
         <h1 className="page-title menu-title">{MENU_TITLE}</h1>
         <p className="menu-lead">{MENU_LEAD}</p>

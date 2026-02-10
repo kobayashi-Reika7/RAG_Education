@@ -3,7 +3,7 @@
  * フロー: 大分類 → 診療科 → 予約目的 → 担当医×時間枠（○×）で時間のみ選択。担当医は自動割当。
  * 確認ボタンは条件をすべて満たすまで無効・画面下部固定。エラーは即時表示。
  */
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../App';
 import Breadcrumb from '../components/Breadcrumb';
@@ -14,7 +14,7 @@ import {
   PURPOSES,
 } from '../constants/masterData';
 import { getTimeSlots } from '../constants/masterData';
-import { getSlots } from '../services/backend';
+import { getSlotsWeek } from '../services/backend';
 
 function isValidYmd(dateStr) {
   return typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateStr);
@@ -141,6 +141,9 @@ function ReserveFormPage() {
   });
   const [gridState, setGridState] = useState({ status: 'idle', data: null, error: '' });
   const [submitError, setSubmitError] = useState('');
+  // 週内全日付の空き枠キャッシュ: { [ymd]: { timeSlots, slots, isDemoFallback } }
+  const weekSlotsCacheRef = useRef({});
+  const [weekFetchStatus, setWeekFetchStatus] = useState('idle'); // idle | loading | done
 
   const departments = category ? (DEPARTMENTS_BY_CATEGORY[category] ?? []) : [];
   const categoryLabel = CATEGORIES.find((c) => c.id === category)?.label ?? '';
@@ -223,10 +226,48 @@ function ReserveFormPage() {
     if (isPastDateYmd(ymd, todayYmd)) return;
     setViewDate(ymd);
     setSubmitError('');
-    setGridState({ status: 'idle', data: null, error: '' });
+    // キャッシュがあれば gridState は useEffect で即反映される（再取得しない）
   };
 
-  // 診療科・日付が決まったらバックエンドAPIで空き枠を取得（○×は表示のみ、計算はバックエンド）
+  // 週全体の空き枠を1回のAPIリクエストで一括取得しキャッシュ
+  useEffect(() => {
+    if (!departmentLabel || !weekDates.length) {
+      weekSlotsCacheRef.current = {};
+      setWeekFetchStatus('idle');
+      setGridState({ status: 'idle', data: null, error: '' });
+      return;
+    }
+    let cancelled = false;
+    weekSlotsCacheRef.current = {};
+    setWeekFetchStatus('loading');
+    const datesToFetch = weekDates
+      .map((d) => d.ymd)
+      .filter((ymd) => !isPastDateYmd(ymd, todayYmd));
+    if (!datesToFetch.length) {
+      setWeekFetchStatus('done');
+      setGridState({ status: 'idle', data: null, error: '' });
+      return;
+    }
+    // 1回のリクエストで週全体を取得（バックエンドは Firestore 2クエリで計算）
+    getSlotsWeek(departmentLabel, datesToFetch)
+      .then((result) => {
+        if (cancelled) return;
+        const cache = {};
+        const ts = getTimeSlots();
+        for (const [ymd, data] of Object.entries(result)) {
+          cache[ymd] = { timeSlots: ts, slots: data.slots ?? [], isDemoFallback: data.isDemoFallback ?? false };
+        }
+        weekSlotsCacheRef.current = cache;
+        setWeekFetchStatus('done');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setWeekFetchStatus('done');
+      });
+    return () => { cancelled = true; };
+  }, [weekStartDate, departmentLabel, todayYmd, weekDates]);
+
+  // 選択中の日付が変わったら、キャッシュからグリッドを即反映（API呼び出しなし）
   useEffect(() => {
     if (!viewDate || !departmentLabel) {
       setGridState({ status: 'idle', data: null, error: '' });
@@ -236,33 +277,15 @@ function ReserveFormPage() {
       setGridState({ status: 'idle', data: null, error: '' });
       return;
     }
-    let cancelled = false;
-    setGridState({ status: 'loading', data: null, error: '' });
-    getSlots(departmentLabel, viewDate)
-      .then((result) => {
-        if (cancelled) return;
-        setGridState({
-          status: 'success',
-          data: {
-            timeSlots: getTimeSlots(),
-            slots: result.slots ?? [],
-            isDemoFallback: result.isDemoFallback ?? false,
-          },
-          error: '',
-        });
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setGridState({
-          status: 'error',
-          data: null,
-          error: err?.message ?? '空き状況の取得に失敗しました。',
-        });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [viewDate, departmentLabel, todayYmd]);
+    const cached = weekSlotsCacheRef.current[viewDate];
+    if (cached) {
+      setGridState({ status: 'success', data: cached, error: '' });
+    } else if (weekFetchStatus === 'loading') {
+      setGridState({ status: 'loading', data: null, error: '' });
+    } else {
+      setGridState({ status: 'error', data: null, error: '空き状況を取得できませんでした。' });
+    }
+  }, [viewDate, departmentLabel, todayYmd, weekFetchStatus]);
 
   const goToConfirm = (timeSlot) => {
     if (!viewDate || !category || !department || !purpose || !timeSlot) return;

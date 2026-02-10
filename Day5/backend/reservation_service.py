@@ -187,6 +187,107 @@ def get_slots(department_label: str, date: str) -> list[dict[str, str | bool]]:
         return [{"time": t, "reservable": False} for t in TIME_SLOTS]
 
 
+def _get_reservations_bulk(doctor_ids: list[str], dates: list[str]) -> set[tuple[str, str, str]]:
+    """
+    複数医師・複数日付の予約を一括取得し、(doctorId, date, time) の set を返す。
+    Firestore の collectionGroup + "in" で最大30件の日付をまとめて取得。
+    """
+    if not doctor_ids or not dates:
+        return set()
+    db = _get_firestore()
+    reserved: set[tuple[str, str, str]] = set()
+    # Firestore "in" は最大30件 → 7日分なら余裕
+    chunk_size = 30
+    for i in range(0, len(dates), chunk_size):
+        date_chunk = dates[i:i + chunk_size]
+        try:
+            q = db.collection_group("reservations").where("date", "in", date_chunk)
+            for doc in q.stream():
+                d = doc.to_dict()
+                did = d.get("doctorId", "")
+                if did in doctor_ids:
+                    reserved.add((did, d.get("date", ""), d.get("time", "")))
+        except Exception as e:
+            logger.warning("_get_reservations_bulk failed for dates %s: %s", date_chunk, e)
+    return reserved
+
+
+def get_availability_for_dates(department_label: str, dates: list[str]) -> list[dict[str, Any]]:
+    """
+    複数日分の空き状況を一括で返す（高速版）。
+    医師取得1回 + 予約取得1回 = Firestore 2クエリで全日分を計算。
+    """
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    use_demo = os.environ.get("USE_DEMO_SLOTS", "1").strip() != "0"
+    all_false = [{"time": t, "reservable": False} for t in TIME_SLOTS]
+
+    # 過去日・祝日は即決定
+    results: dict[str, dict[str, Any]] = {}
+    dates_to_compute: list[str] = []
+    for date in dates:
+        if not date or not department_label:
+            results[date] = {"date": date or "", "is_holiday": False, "reservable": False, "reason": "closed", "slots": all_false}
+            continue
+        try:
+            dt = datetime.strptime(date, "%Y-%m-%d")
+            if dt.date() < today.date():
+                results[date] = {"date": date, "is_holiday": False, "reservable": False, "reason": "past", "slots": all_false}
+                continue
+        except (ValueError, TypeError):
+            results[date] = {"date": date, "is_holiday": False, "reservable": False, "reason": "closed", "slots": all_false}
+            continue
+        if _is_japanese_holiday(date):
+            results[date] = {"date": date, "is_holiday": True, "reservable": False, "reason": "holiday", "slots": all_false}
+            continue
+        dates_to_compute.append(date)
+
+    # 計算対象の日付がなければ即返却
+    if not dates_to_compute:
+        return [results[d] for d in dates]
+
+    # 医師取得（1回のみ）
+    try:
+        doctors = _get_doctors_by_department(department_label)
+    except Exception:
+        doctors = []
+
+    if not doctors and use_demo:
+        for date in dates_to_compute:
+            slot_list = [{"time": t, "reservable": _demo_reservable(date, t)} for t in TIME_SLOTS]
+            any_ok = any(s["reservable"] for s in slot_list)
+            results[date] = {"date": date, "is_holiday": False, "reservable": any_ok, "reason": None, "slots": slot_list}
+        return [results[d] for d in dates]
+
+    if not doctors:
+        for date in dates_to_compute:
+            results[date] = {"date": date, "is_holiday": False, "reservable": False, "reason": None, "slots": all_false}
+        return [results[d] for d in dates]
+
+    # 予約一括取得（1回のみ）
+    doctor_ids = [doc["id"] for doc in doctors]
+    doctor_id_set = set(doctor_ids)
+    try:
+        reserved = _get_reservations_bulk(doctor_ids, dates_to_compute)
+    except Exception as e:
+        logger.warning("get_availability_for_dates: bulk reservation fetch failed: %s", e)
+        reserved = set()
+
+    # メモリ上で各日・各時間の空き判定
+    for date in dates_to_compute:
+        slot_list = []
+        for t in TIME_SLOTS:
+            available = False
+            for doc in doctors:
+                if _is_working(doc, date, t) and (doc["id"], date, t) not in reserved:
+                    available = True
+                    break
+            slot_list.append({"time": t, "reservable": available})
+        any_ok = any(s["reservable"] for s in slot_list)
+        results[date] = {"date": date, "is_holiday": False, "reservable": any_ok, "reason": None, "slots": slot_list}
+
+    return [results[d] for d in dates]
+
+
 def get_availability_for_date(department_label: str, date: str) -> dict[str, Any]:
     """
     1日分の空き状況を返す。祝日・過去日はバックエンドで判定し、レスポンスに含める。

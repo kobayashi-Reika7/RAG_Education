@@ -107,6 +107,47 @@ export async function getSlots(department, date, idToken) {
 }
 
 /**
+ * 複数日分の空き枠を一括取得（高速版）。バックエンドで医師取得1回+予約取得1回で全日分を計算。
+ * @param {string} department - 診療科表示名
+ * @param {string[]} dates - YYYY-MM-DD の配列
+ * @param {string} [idToken]
+ * @returns {Promise<Object.<string, { slots: Array<{ time: string, reservable: boolean }>, isDemoFallback: boolean }>>}
+ */
+export async function getSlotsWeek(department, dates, idToken) {
+  if (!department || !Array.isArray(dates) || !dates.length) return {};
+  const params = new URLSearchParams({ department, dates: dates.join(',') });
+  try {
+    const res = await fetch(`${getBaseUrl()}/api/slots/week?${params}`, {
+      method: 'GET',
+      headers: authHeaders(idToken),
+    });
+    const data = await res.json().catch(() => []);
+    if (!res.ok) {
+      throw new Error(data.detail ?? '空き枠の一括取得に失敗しました。');
+    }
+    const result = {};
+    for (const item of (Array.isArray(data) ? data : [])) {
+      const date = item.date ?? '';
+      if (!date) continue;
+      result[date] = {
+        slots: Array.isArray(item.slots) ? item.slots : [],
+        isDemoFallback: false,
+      };
+    }
+    return result;
+  } catch (err) {
+    // フォールバック: 個別に取得せずデモスロットを返す
+    const { getTimeSlots } = await import('../constants/masterData');
+    const timeSlots = getTimeSlots();
+    const result = {};
+    for (const d of dates) {
+      result[d] = { slots: getDemoSlotsForDate(d, timeSlots), isDemoFallback: true };
+    }
+    return result;
+  }
+}
+
+/**
  * 予約を確定する。担当医はバックエンドで自動割当。認証必須。
  * @param {string} idToken - Firebase ID トークン（必須）
  * @param {object} body - { department, date, time }

@@ -66,9 +66,6 @@ function SignupPage() {
         ]}
       />
       <ReservationStepHeader currentStep={2} />
-      <div className="auth-hero">
-        <img src={appHero} alt="" className="app-hero-img" width="160" height="80" />
-      </div>
       <div className="auth-header">
         <h1 className="auth-app-title">診療予約</h1>
         <p className="auth-app-lead">日付を選んで、かんたん予約</p>

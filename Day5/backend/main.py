@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from models import UserResponse, SyncUserBody, SlotItem, AvailabilityForDateResponse, CreateReservationBody, ReservationCreated
 import store
 from firebase_admin_client import verify_id_token
-from reservation_service import get_availability_for_date, create_reservation as create_reservation_service
+from reservation_service import get_availability_for_date, get_availability_for_dates, create_reservation as create_reservation_service
 
 # CORS: フロントエンド（Vite 開発サーバー）を許可
 # 5200 が使用中だと Vite が 5201 を使うため、5201 も許可する
@@ -121,6 +121,25 @@ def api_info():
             "reservations": "POST /api/reservations",
         },
     }
+
+
+@app.get("/api/slots/week")
+def api_slots_week(department: str = "", dates: str = "", authorization: str | None = Header(default=None)):
+    """
+    複数日分の空き枠を一括で返す（高速版）。
+    dates はカンマ区切り（例: 2026-02-10,2026-02-11,...）。最大14日。
+    医師取得1回 + 予約取得1回の計2クエリで全日分を計算。
+    """
+    department = (department or "").strip()
+    date_list = [d.strip() for d in (dates or "").split(",") if d.strip()]
+    if not department or not date_list:
+        return []
+    if len(date_list) > 14:
+        date_list = date_list[:14]
+    try:
+        return get_availability_for_dates(department, date_list)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/api/slots", response_model=AvailabilityForDateResponse)

@@ -1111,6 +1111,15 @@ body {
   margin-bottom: 1rem;
 }
 
+.auth-hero-img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: 12px;
+  object-fit: cover;
+  max-height: 220px;
+}
+
 .auth-hero .app-hero-img {
   width: 140px;
   max-height: 70px;
@@ -1169,9 +1178,15 @@ body {
   margin-bottom: 0.75rem;
   display: flex;
   justify-content: center;
+  overflow: hidden;
+  border-radius: 12px;
 }
 .menu-hero-img {
-  /* サイズは .app-hero-img で統一 */
+  width: 100%;
+  height: auto;
+  display: block;
+  object-fit: cover;
+  max-height: 220px;
 }
 .menu-lead {
   margin: 0.35rem 0 0;
@@ -2081,10 +2096,16 @@ body {
   margin-bottom: 0.75rem;
   display: flex;
   justify-content: center;
+  overflow: hidden;
+  border-radius: 12px;
 }
 
 .top-hero-img {
-  /* サイズは .app-hero-img で統一 */
+  width: 100%;
+  height: auto;
+  display: block;
+  object-fit: cover;
+  max-height: 220px;
 }
 
 .top-title {
@@ -2328,6 +2349,19 @@ body {
   .dept-selector-grid {
     grid-template-columns: repeat(4, 1fr);
   }
+}
+
+/* トップページ: 診療科一覧のレイアウト固定 */
+.top-dept-list .dept-selector {
+  max-width: 480px;
+  margin: 0 auto;
+}
+.top-dept-list .dept-selector-grid {
+  grid-template-columns: repeat(3, 1fr);
+}
+.top-dept-list .dept-selector-item {
+  justify-content: center;
+  text-align: center;
 }
 
 .top-footer {
