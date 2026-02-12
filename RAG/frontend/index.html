@@ -2,305 +2,617 @@
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>♨️ 温泉相談チャット - OnsenRAG</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#fef3c7">
+    <title>OnsenRAG - 温泉の知恵袋</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;600;700&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
-        /* ============================================
-           温泉相談チャットUI - スタイルシート
-           温泉の和風テーマでデザイン
-           ============================================ */
+        :root {
+            --onsen-amber: #f59e0b;
+            --onsen-gold: #fbbf24;
+            --onsen-cream: #fef3c7;
+            --onsen-peach: #fed7aa;
+            --onsen-terracotta: #c2410c;
+            --onsen-stone: #78716c;
+            --onsen-wood: #78350f;
+            --onsen-steam: rgba(255, 255, 255, 0.6);
+            --text-warm: #422006;
+            --text-soft: #92400e;
+            --text-muted: #a16207;
+            --shadow-soft: 0 4px 20px rgba(180, 83, 9, 0.15);
+            --shadow-glow: 0 0 60px rgba(245, 158, 11, 0.2);
+            --radius: 16px;
+            --radius-lg: 24px;
+            --radius-sm: 12px;
+            --transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            --safe-top: env(safe-area-inset-top, 0);
+            --safe-bottom: env(safe-area-inset-bottom, 0);
+            --safe-left: env(safe-area-inset-left, 0);
+            --safe-right: env(safe-area-inset-right, 0);
+        }
 
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html {
+            font-size: 16px;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        @media (max-width: 480px) {
+            html { font-size: 15px; }
         }
 
         body {
-            font-family: 'Hiragino Kaku Gothic ProN', 'Yu Gothic', 'Meiryo', sans-serif;
-            background: linear-gradient(135deg, #fef9e7 0%, #fdebd0 50%, #f5cba7 100%);
+            font-family: 'Zen Kaku Gothic New', 'Noto Sans JP', sans-serif;
+            background: linear-gradient(160deg, #fef9e7 0%, #fde8d1 30%, #fef3c7 60%, #fef9e7 100%);
             min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: flex-start;
-            padding: 20px;
+            min-height: 100dvh;
+            color: var(--text-warm);
+            line-height: 1.7;
+            overflow-x: hidden;
         }
 
-        .container {
-            max-width: 700px;
-            width: 100%;
-            margin-top: 20px;
+        /* 湯気・泡（PC/タブレットで表示、スマホでは軽量化） */
+        .steam-container {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 0;
+            overflow: hidden;
+        }
+        @media (max-width: 768px) {
+            .steam-container { opacity: 0.5; }
+        }
+        .steam {
+            position: absolute;
+            bottom: 0;
+            width: 200%;
+            height: 100%;
+            background: radial-gradient(ellipse 80% 50% at 30% 100%, var(--onsen-steam) 0%, transparent 50%),
+                radial-gradient(ellipse 60% 40% at 70% 100%, rgba(255,255,255,0.4) 0%, transparent 45%);
+            animation: steamRise 8s ease-in-out infinite;
+            opacity: 0.7;
+        }
+        .steam:nth-child(2) { animation-delay: 2s; opacity: 0.5; }
+        .steam:nth-child(3) { animation-delay: 4s; opacity: 0.6; }
+        @media (prefers-reduced-motion: reduce) {
+            .steam { animation: none; opacity: 0.4; }
+        }
+        @keyframes steamRise {
+            0%, 100% { transform: translateY(100%) scale(1); opacity: 0.3; }
+            50% { transform: translateY(-20%) scale(1.1); opacity: 0.6; }
         }
 
-        /* ヘッダー部分 */
-        .header {
-            text-align: center;
-            margin-bottom: 24px;
+        .bubbles {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 0;
+        }
+        @media (max-width: 768px) {
+            .bubbles { display: none; }
+        }
+        .bubble {
+            position: absolute;
+            background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.9), rgba(245,158,11,0.2));
+            border-radius: 50%;
+            animation: bubbleFloat 6s ease-in-out infinite;
+        }
+        .bubble:nth-child(1) { width: 12px; height: 12px; left: 10%; animation-delay: 0s; }
+        .bubble:nth-child(2) { width: 8px; height: 8px; left: 25%; animation-delay: 1s; }
+        .bubble:nth-child(3) { width: 15px; height: 15px; left: 45%; animation-delay: 2s; }
+        .bubble:nth-child(4) { width: 6px; height: 6px; left: 65%; animation-delay: 0.5s; }
+        .bubble:nth-child(5) { width: 10px; height: 10px; left: 80%; animation-delay: 1.5s; }
+        .bubble:nth-child(6) { width: 8px; height: 8px; left: 90%; animation-delay: 3s; }
+        @keyframes bubbleFloat {
+            0%, 100% { transform: translateY(100vh) scale(0.5); opacity: 0; }
+            10% { opacity: 0.6; }
+            90% { opacity: 0.4; }
+            100% { transform: translateY(-100px) scale(1); opacity: 0; }
         }
 
-        .header h1 {
-            font-size: 1.8rem;
-            color: #6c3483;
-            margin-bottom: 8px;
-        }
-
-        .header p {
-            color: #7f8c8d;
-            font-size: 0.9rem;
-        }
-
-        /* チャット表示エリア */
-        .chat-area {
-            background: white;
-            border-radius: 16px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
-            padding: 24px;
-            margin-bottom: 16px;
-            min-height: 300px;
-            max-height: 500px;
-            overflow-y: auto;
-        }
-
-        /* メッセージ吹き出し */
-        .message {
-            margin-bottom: 16px;
+        .app {
+            position: relative;
+            z-index: 1;
+            max-width: 680px;
+            margin: 0 auto;
+            min-height: 100vh;
+            min-height: 100dvh;
             display: flex;
             flex-direction: column;
+            padding: max(24px, var(--safe-top)) max(20px, var(--safe-left)) max(32px, var(--safe-bottom)) max(20px, var(--safe-right));
+        }
+        @media (max-width: 768px) {
+            .app { padding: max(16px, var(--safe-top)) max(16px, var(--safe-left)) max(24px, var(--safe-bottom)) max(16px, var(--safe-right)); }
+        }
+        @media (min-width: 1024px) {
+            .app { padding: 32px 28px 48px; max-width: 720px; }
         }
 
-        .message.user {
-            align-items: flex-end;
+        /* ヘッダー - 和モダン */
+        .header {
+            flex-shrink: 0;
+            text-align: center;
+            padding: 12px 0 20px;
+        }
+        @media (min-width: 768px) {
+            .header { padding: 16px 0 28px; }
         }
 
-        .message.assistant {
-            align-items: flex-start;
+        .header-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
         }
 
-        .message-label {
+        .header-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            background: linear-gradient(135deg, var(--onsen-amber) 0%, var(--onsen-terracotta) 100%);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 50px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            box-shadow: var(--shadow-soft);
+            margin-bottom: 12px;
+            letter-spacing: 0.05em;
+        }
+        .header-badge::before {
+            content: '';
+            width: 10px;
+            height: 10px;
+            background: white;
+            border-radius: 50%;
+            animation: pulse 2s ease-in-out infinite;
+        }
+        @media (max-width: 480px) {
+            .header-badge { padding: 8px 16px; font-size: 0.75rem; margin-bottom: 10px; }
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(1.1); }
+        }
+
+        .logo {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+        .logo-icon {
+            width: 56px;
+            height: 56px;
+            background: linear-gradient(145deg, var(--onsen-amber) 0%, var(--onsen-gold) 50%, var(--onsen-cream) 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            color: var(--onsen-wood);
+            font-weight: 800;
+            box-shadow: 0 6px 24px rgba(180, 83, 9, 0.25), inset 0 -2px 4px rgba(255,255,255,0.4);
+            animation: iconFloat 3s ease-in-out infinite;
+        }
+        @media (min-width: 768px) {
+            .logo-icon { width: 72px; height: 72px; font-size: 2rem; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .logo-icon { animation: none; }
+        }
+        @keyframes iconFloat {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-4px); }
+        }
+
+        .logo-text h1 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--text-warm);
+            letter-spacing: 0.02em;
+        }
+        @media (min-width: 768px) {
+            .logo-text h1 { font-size: 1.5rem; }
+        }
+        .logo-text span {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+        @media (min-width: 768px) {
+            .logo-text span { font-size: 0.85rem; }
+        }
+
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 12px;
             font-size: 0.75rem;
-            color: #95a5a6;
-            margin-bottom: 4px;
-            padding: 0 8px;
+            color: var(--text-muted);
+            background: rgba(255,255,255,0.7);
+            padding: 6px 14px;
+            border-radius: 20px;
         }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--onsen-stone);
+        }
+        .status.connected .status-dot {
+            background: #22c55e;
+            box-shadow: 0 0 8px #22c55e;
+        }
+
+        /* チャットエリア */
+        .chat-area {
+            flex: 1;
+            margin: 16px 0;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding: 8px 0;
+            scroll-behavior: smooth;
+            -webkit-overflow-scrolling: touch;
+        }
+        @media (min-width: 768px) {
+            .chat-area { margin: 24px 0; }
+        }
+        .chat-area::-webkit-scrollbar { width: 6px; }
+        @media (min-width: 768px) {
+            .chat-area::-webkit-scrollbar { width: 8px; }
+        }
+        .chat-area::-webkit-scrollbar-thumb {
+            background: var(--onsen-peach);
+            border-radius: 4px;
+        }
+        .chat-area::-webkit-scrollbar-thumb:hover {
+            background: var(--onsen-amber);
+        }
+
+        .message {
+            display: flex;
+            flex-direction: column;
+            margin-bottom: 16px;
+            animation: messageIn 0.4s ease-out;
+        }
+        @media (min-width: 768px) {
+            .message { margin-bottom: 20px; }
+        }
+        @keyframes messageIn {
+            from { opacity: 0; transform: translateY(12px) scale(0.98); }
+            to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .message.user { align-items: flex-end; }
+        .message.assistant { align-items: flex-start; }
+
+        .message-role {
+            font-size: 0.7rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+            padding: 0 4px;
+        }
+        @media (min-width: 768px) {
+            .message-role { font-size: 0.75rem; margin-bottom: 6px; }
+        }
+        .message.user .message-role { text-align: right; }
 
         .message-bubble {
-            padding: 12px 18px;
-            border-radius: 16px;
-            max-width: 85%;
-            line-height: 1.6;
-            font-size: 0.95rem;
+            max-width: 92%;
+            padding: 12px 16px;
+            border-radius: var(--radius);
+            font-size: 0.9rem;
+            line-height: 1.7;
             white-space: pre-wrap;
+            word-break: break-word;
         }
-
+        @media (min-width: 768px) {
+            .message-bubble { max-width: 85%; padding: 16px 20px; font-size: 0.95rem; }
+        }
         .message.user .message-bubble {
-            background: #6c3483;
+            background: linear-gradient(135deg, var(--onsen-wood) 0%, #92400e 100%);
             color: white;
-            border-bottom-right-radius: 4px;
+            border-bottom-right-radius: 6px;
+            box-shadow: 0 4px 16px rgba(120, 53, 15, 0.3);
         }
-
         .message.assistant .message-bubble {
-            background: #f8f9fa;
-            color: #2c3e50;
-            border: 1px solid #e9ecef;
-            border-bottom-left-radius: 4px;
+            background: rgba(255, 255, 255, 0.9);
+            color: var(--text-warm);
+            border: 2px solid var(--onsen-cream);
+            border-bottom-left-radius: 6px;
+            box-shadow: var(--shadow-soft);
+        }
+        .message.assistant .message-bubble.error-bubble {
+            background: #fef2f2;
+            border-color: #fecaca;
+            color: #b91c1c;
         }
 
-        /* 参照ソース表示 */
-        .sources {
-            margin-top: 8px;
-            max-width: 85%;
+        .sources { margin-top: 10px; max-width: 92%; }
+        @media (min-width: 768px) {
+            .sources { max-width: 85%; margin-top: 12px; }
         }
-
         .sources-toggle {
-            background: none;
-            border: none;
-            color: #6c3483;
+            background: linear-gradient(135deg, var(--onsen-cream) 0%, var(--onsen-peach) 100%);
+            border: 1px solid var(--onsen-amber);
+            color: var(--text-soft);
             cursor: pointer;
-            font-size: 0.8rem;
-            padding: 4px 0;
-            text-decoration: underline;
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 8px 14px;
+            border-radius: var(--radius-sm);
+            transition: all var(--transition);
+            font-family: inherit;
+            min-height: 44px;
         }
-
-        .sources-list {
-            display: none;
-            margin-top: 4px;
+        @media (min-width: 768px) {
+            .sources-toggle { font-size: 0.8rem; padding: 8px 16px; min-height: auto; }
         }
-
-        .sources-list.open {
-            display: block;
+        .sources-toggle:hover {
+            background: var(--onsen-amber);
+            color: white;
+            transform: translateY(-1px);
         }
-
         .source-item {
-            background: #fff8e1;
-            border-left: 3px solid #f39c12;
-            padding: 8px 12px;
-            margin-bottom: 6px;
+            background: rgba(254, 243, 199, 0.8);
+            border-left: 4px solid var(--onsen-amber);
+            border-radius: 0 12px 12px 0;
+            padding: 10px 14px;
+            margin-top: 6px;
             font-size: 0.8rem;
-            color: #666;
-            border-radius: 0 8px 8px 0;
-            line-height: 1.4;
+            color: var(--text-soft);
+            line-height: 1.5;
         }
+        @media (min-width: 768px) {
+            .source-item { padding: 12px 16px; font-size: 0.85rem; }
+        }
+        .sources-list { display: none; }
+        .sources-list.open { display: block; }
 
-        /* 入力エリア */
+        /* 入力エリア - タッチ対応 */
         .input-area {
+            flex-shrink: 0;
             display: flex;
             gap: 10px;
-            background: white;
-            border-radius: 16px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
-            padding: 12px 16px;
+            background: rgba(255, 255, 255, 0.9);
+            border: 2px solid var(--onsen-cream);
+            border-radius: var(--radius-lg);
+            padding: 12px 14px;
+            box-shadow: var(--shadow-soft);
+            transition: all var(--transition);
+        }
+        @media (min-width: 768px) {
+            .input-area { gap: 12px; padding: 14px 18px; }
+        }
+        .input-area:focus-within {
+            border-color: var(--onsen-amber);
+            box-shadow: var(--shadow-glow);
         }
 
         .input-area input {
             flex: 1;
-            border: 2px solid #e9ecef;
-            border-radius: 12px;
-            padding: 12px 16px;
-            font-size: 1rem;
+            background: var(--onsen-cream);
+            border: none;
+            border-radius: 50px;
+            padding: 12px 18px;
+            font-size: 0.9rem;
+            color: var(--text-warm);
             outline: none;
-            transition: border-color 0.2s;
+            font-family: inherit;
+            min-height: 44px;
         }
-
-        .input-area input:focus {
-            border-color: #6c3483;
+        @media (min-width: 768px) {
+            .input-area input { padding: 14px 20px; font-size: 0.95rem; min-height: auto; }
         }
-
-        .input-area input::placeholder {
-            color: #bdc3c7;
-        }
+        .input-area input::placeholder { color: var(--text-muted); }
 
         .input-area button {
-            background: #6c3483;
+            background: linear-gradient(135deg, var(--onsen-amber) 0%, var(--onsen-terracotta) 100%);
             color: white;
             border: none;
-            border-radius: 12px;
-            padding: 12px 24px;
-            font-size: 1rem;
+            border-radius: 50px;
+            padding: 12px 22px;
+            font-size: 0.9rem;
+            font-weight: 700;
             cursor: pointer;
-            transition: background 0.2s;
-            white-space: nowrap;
+            transition: all var(--transition);
+            font-family: inherit;
+            box-shadow: 0 4px 14px rgba(180, 83, 9, 0.35);
+            min-height: 44px;
+            min-width: 72px;
         }
-
-        .input-area button:hover {
-            background: #8e44ad;
+        @media (min-width: 768px) {
+            .input-area button { padding: 14px 28px; font-size: 0.95rem; min-height: auto; min-width: auto; }
         }
-
+        .input-area button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(180, 83, 9, 0.4);
+        }
+        .input-area button:active:not(:disabled) { transform: translateY(0); }
         .input-area button:disabled {
-            background: #bdc3c7;
+            background: var(--onsen-stone);
+            opacity: 0.6;
             cursor: not-allowed;
         }
 
-        /* ローディング表示 */
-        .loading {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            color: #95a5a6;
-            font-size: 0.9rem;
-            padding: 12px 18px;
-        }
-
-        .loading-dots {
-            display: flex;
-            gap: 4px;
-        }
-
-        .loading-dots span {
-            width: 8px;
-            height: 8px;
-            background: #6c3483;
-            border-radius: 50%;
-            animation: bounce 1.4s infinite both;
-        }
-
-        .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
-        .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
-
-        @keyframes bounce {
-            0%, 80%, 100% { transform: scale(0); }
-            40% { transform: scale(1); }
-        }
-
-        /* サンプル質問ボタン */
+        /* サンプル質問 */
         .sample-questions {
             display: flex;
             flex-wrap: wrap;
             gap: 8px;
-            margin-top: 12px;
+            margin-top: 16px;
             justify-content: center;
         }
-
+        @media (min-width: 768px) {
+            .sample-questions { gap: 10px; margin-top: 20px; }
+        }
         .sample-btn {
-            background: white;
-            border: 1px solid #d5d8dc;
-            border-radius: 20px;
-            padding: 6px 14px;
+            background: rgba(255, 255, 255, 0.9);
+            border: 2px solid var(--onsen-peach);
+            border-radius: 50px;
+            padding: 10px 18px;
             font-size: 0.8rem;
-            color: #6c3483;
+            color: var(--text-soft);
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all var(--transition);
+            font-family: inherit;
+            font-weight: 500;
+            box-shadow: 0 2px 8px rgba(180, 83, 9, 0.1);
+            min-height: 44px;
         }
-
+        @media (min-width: 768px) {
+            .sample-btn { padding: 10px 20px; font-size: 0.85rem; min-height: auto; }
+        }
         .sample-btn:hover {
-            background: #6c3483;
+            background: linear-gradient(135deg, var(--onsen-amber) 0%, var(--onsen-gold) 100%);
             color: white;
-            border-color: #6c3483;
+            border-color: var(--onsen-amber);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 16px rgba(180, 83, 9, 0.25);
         }
 
-        /* 初期メッセージ */
+        /* ウェルカム */
         .welcome {
             text-align: center;
-            color: #95a5a6;
-            padding: 40px 20px;
+            padding: 32px 20px;
         }
-
+        @media (min-width: 768px) {
+            .welcome { padding: 48px 24px; }
+        }
         .welcome-icon {
-            font-size: 3rem;
-            margin-bottom: 12px;
+            width: 72px;
+            height: 72px;
+            margin: 0 auto 20px;
+            background: linear-gradient(145deg, var(--onsen-amber) 0%, var(--onsen-gold) 50%, var(--onsen-cream) 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2rem;
+            color: var(--onsen-wood);
+            font-weight: 800;
+            box-shadow: 0 10px 36px rgba(180, 83, 9, 0.15), inset 0 -2px 4px rgba(255,255,255,0.5);
+            animation: iconFloat 3s ease-in-out infinite;
+        }
+        @media (min-width: 768px) {
+            .welcome-icon { width: 88px; height: 88px; font-size: 2.5rem; margin-bottom: 24px; }
+        }
+        .welcome h2 {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: var(--text-warm);
+            margin-bottom: 10px;
+        }
+        @media (min-width: 768px) {
+            .welcome h2 { font-size: 1.25rem; margin-bottom: 12px; }
+        }
+        .welcome p {
+            font-size: 0.85rem;
+            color: var(--text-soft);
+            line-height: 1.8;
+        }
+        @media (min-width: 768px) {
+            .welcome p { font-size: 0.9rem; }
+        }
+        .welcome .hint {
+            margin-top: 16px;
+            padding: 14px 0;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            border-top: 1px dashed var(--onsen-peach);
+        }
+        @media (min-width: 768px) {
+            .welcome .hint { margin-top: 20px; padding: 16px 0; font-size: 0.85rem; }
         }
 
-        /* エラー表示 */
-        .error-bubble {
-            background: #fdf2f2 !important;
-            border: 1px solid #f5b7b1 !important;
-            color: #c0392b !important;
+        .loading {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 18px;
+            background: rgba(255, 255, 255, 0.9);
+            border: 2px solid var(--onsen-cream);
+            border-radius: var(--radius);
+            color: var(--text-soft);
+            font-size: 0.85rem;
+            font-weight: 500;
+            box-shadow: var(--shadow-soft);
+        }
+        @media (min-width: 768px) {
+            .loading { padding: 16px 20px; font-size: 0.9rem; }
+        }
+        .loading-dots {
+            display: flex;
+            gap: 6px;
+        }
+        .loading-dots span {
+            width: 8px;
+            height: 8px;
+            background: var(--onsen-amber);
+            border-radius: 50%;
+            animation: bubblePulse 1.4s ease-in-out infinite both;
+        }
+        .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+        .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes bubblePulse {
+            0%, 80%, 100% { transform: scale(0.8); opacity: 0.5; }
+            40% { transform: scale(1.2); opacity: 1; }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <!-- ヘッダー -->
-        <div class="header">
-            <h1>♨️ 温泉相談チャット</h1>
-            <p>温泉に関する質問にRAGシステムがお答えします</p>
-        </div>
+    <div class="steam-container">
+        <div class="steam"></div>
+        <div class="steam"></div>
+        <div class="steam"></div>
+    </div>
+    <div class="bubbles">
+        <div class="bubble"></div>
+        <div class="bubble"></div>
+        <div class="bubble"></div>
+        <div class="bubble"></div>
+        <div class="bubble"></div>
+        <div class="bubble"></div>
+    </div>
 
-        <!-- チャット表示エリア -->
+    <div class="app">
+        <header class="header">
+            <div class="header-badge">温泉の知恵袋</div>
+            <div class="logo">
+                <div class="logo-icon">♨</div>
+                <div class="logo-text">
+                    <h1>OnsenRAG</h1>
+                    <span>温泉のいろは、なんでもおまかせ</span>
+                </div>
+            </div>
+            <div class="status" id="status">
+                <span class="status-dot"></span>
+                <span id="statusText">接続確認中</span>
+            </div>
+        </header>
+
         <div class="chat-area" id="chatArea">
             <div class="welcome">
-                <div class="welcome-icon">♨️</div>
-                <p>温泉について質問してみましょう！</p>
-                <p style="font-size: 0.8rem; margin-top: 8px;">
-                    例: 「冬におすすめの温泉地は？」「美肌の湯とは？」
-                </p>
+                <div class="welcome-icon">♨</div>
+                <h2>温泉の旅、はじめます</h2>
+                <p>気になることをお気軽にどうぞ</p>
+                <p class="hint">例: 「冬におすすめの温泉地は？」「美肌の湯とは？」「東京から行きやすい温泉は？」</p>
             </div>
         </div>
 
-        <!-- 入力エリア -->
         <div class="input-area">
-            <input
-                type="text"
-                id="questionInput"
-                placeholder="温泉について質問を入力..."
-                onkeydown="if(event.key==='Enter') askQuestion()"
-            />
-            <button id="askBtn" onclick="askQuestion()">質問する</button>
+            <input type="text" id="questionInput" placeholder="温泉について質問を入力..." autocomplete="off"
+                onkeydown="if(event.key==='Enter') askQuestion()" />
+            <button id="askBtn" onclick="askQuestion()">送る</button>
         </div>
 
-        <!-- サンプル質問ボタン -->
         <div class="sample-questions">
             <button class="sample-btn" onclick="setQuestion('温泉とは何ですか？')">温泉とは？</button>
-            <button class="sample-btn" onclick="setQuestion('美肌の湯と呼ばれる泉質は？')">美肌の湯は？</button>
+            <button class="sample-btn" onclick="setQuestion('美肌の湯と呼ばれる泉質は？')">美肌の湯</button>
             <button class="sample-btn" onclick="setQuestion('冬におすすめの温泉地は？')">冬のおすすめ</button>
             <button class="sample-btn" onclick="setQuestion('東京から行きやすい温泉地は？')">東京から近い</button>
             <button class="sample-btn" onclick="setQuestion('温泉の基本マナーを教えてください')">マナー</button>
@@ -309,39 +621,42 @@
     </div>
 
     <script>
-        // ============================================
-        // 温泉相談チャット - クライアントサイドロジック
-        // ============================================
-
-        // APIのベースURL（FastAPIサーバー）
         const API_BASE = "http://localhost:8000";
-
-        // チャットエリアの要素を取得
         const chatArea = document.getElementById("chatArea");
         const questionInput = document.getElementById("questionInput");
         const askBtn = document.getElementById("askBtn");
-
-        // 初回かどうかのフラグ（ウェルカムメッセージ削除用）
+        const statusEl = document.getElementById("status");
+        const statusText = document.getElementById("statusText");
         let isFirstMessage = true;
 
-        /**
-         * サンプル質問ボタンから質問を設定
-         * @param {string} question - 設定する質問文
-         */
+        const STATUS_LABELS = {
+            Checking: "接続確認中",
+            Connected: "接続済み",
+            Init: "初期化中",
+            Offline: "オフライン"
+        };
+
+        let statusType = "Checking";
+        (async function checkHealth() {
+            try {
+                const res = await fetch(`${API_BASE}/api/health`);
+                const data = await res.json();
+                if (data.rag_initialized) {
+                    statusEl.classList.add("connected");
+                    statusType = "Connected";
+                } else statusType = "Init";
+            } catch {
+                statusType = "Offline";
+            }
+            statusText.textContent = STATUS_LABELS[statusType];
+        })();
+
         function setQuestion(question) {
             questionInput.value = question;
             questionInput.focus();
         }
 
-        /**
-         * メッセージをチャットエリアに追加
-         * @param {string} text - メッセージテキスト
-         * @param {string} role - "user" または "assistant"
-         * @param {string[]} sources - 参照ソースの配列（assistant時のみ）
-         * @param {boolean} isError - エラーメッセージかどうか
-         */
         function addMessage(text, role, sources = [], isError = false) {
-            // 初回メッセージ時にウェルカム画面を削除
             if (isFirstMessage) {
                 chatArea.innerHTML = "";
                 isFirstMessage = false;
@@ -350,38 +665,31 @@
             const messageDiv = document.createElement("div");
             messageDiv.className = `message ${role}`;
 
-            // ラベル（あなた / アシスタント）
-            const label = document.createElement("div");
-            label.className = "message-label";
-            label.textContent = role === "user" ? "あなた" : "♨️ アシスタント";
+            const meta = document.createElement("div");
+            meta.className = "message-meta";
+            meta.innerHTML = `<span class="message-role">${role === "user" ? "あなた" : "温泉アシスタント"}</span>`;
 
-            // 吹き出し
             const bubble = document.createElement("div");
             bubble.className = `message-bubble ${isError ? "error-bubble" : ""}`;
             bubble.textContent = text;
 
-            messageDiv.appendChild(label);
+            messageDiv.appendChild(meta);
             messageDiv.appendChild(bubble);
 
-            // 参照ソースがある場合は折りたたみで表示
             if (sources.length > 0) {
                 const sourcesDiv = document.createElement("div");
                 sourcesDiv.className = "sources";
-
                 const toggle = document.createElement("button");
                 toggle.className = "sources-toggle";
-                toggle.textContent = "📄 参照ソースを表示";
+                toggle.textContent = "参照ソースを表示";
                 toggle.onclick = function () {
                     const list = this.nextElementSibling;
                     list.classList.toggle("open");
-                    this.textContent = list.classList.contains("open")
-                        ? "📄 参照ソースを隠す"
-                        : "📄 参照ソースを表示";
+                    this.textContent = list.classList.contains("open") ? "参照ソースを隠す" : "参照ソースを表示";
                 };
 
                 const list = document.createElement("div");
                 list.className = "sources-list";
-
                 sources.forEach((src, i) => {
                     const item = document.createElement("div");
                     item.className = "source-item";
@@ -395,58 +703,32 @@
             }
 
             chatArea.appendChild(messageDiv);
-
-            // 最新メッセージにスクロール
             chatArea.scrollTop = chatArea.scrollHeight;
         }
 
-        /**
-         * ローディング表示を追加・削除
-         * @param {boolean} show - 表示するかどうか
-         */
         function setLoading(show) {
-            // 既存のローディングを削除
             const existing = document.querySelector(".loading");
             if (existing) existing.remove();
 
             if (show) {
                 const loading = document.createElement("div");
                 loading.className = "loading";
-                loading.innerHTML = `
-                    <div class="loading-dots">
-                        <span></span><span></span><span></span>
-                    </div>
-                    回答を生成中...
-                `;
+                loading.innerHTML = `<div class="loading-dots"><span></span><span></span><span></span></div>回答を考えています...`;
                 chatArea.appendChild(loading);
                 chatArea.scrollTop = chatArea.scrollHeight;
             }
         }
 
-        /**
-         * 質問を送信してRAGで回答を取得
-         *
-         * 処理の流れ：
-         * 1. ユーザーの質問をチャットに表示
-         * 2. APIに質問を送信
-         * 3. 回答と参照ソースをチャットに表示
-         */
         async function askQuestion() {
             const question = questionInput.value.trim();
             if (!question) return;
 
-            // 入力欄をクリアしてボタンを無効化
             questionInput.value = "";
             askBtn.disabled = true;
-
-            // ユーザーメッセージを表示
             addMessage(question, "user");
-
-            // ローディング表示
             setLoading(true);
 
             try {
-                // FastAPI にPOSTリクエスト
                 const response = await fetch(`${API_BASE}/api/ask`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -455,30 +737,23 @@
 
                 if (!response.ok) {
                     const error = await response.json();
-                    throw new Error(error.detail || "APIエラー");
+                    throw new Error(error.detail || "API Error");
                 }
 
                 const data = await response.json();
-
-                // ローディング削除して回答を表示
                 setLoading(false);
                 addMessage(data.answer, "assistant", data.sources);
-
             } catch (error) {
                 setLoading(false);
-
-                // エラーメッセージを表示
                 let errorMsg = "回答の取得に失敗しました。";
                 if (error.message.includes("Failed to fetch")) {
-                    errorMsg += "\nAPIサーバーが起動していない可能性があります。"
-                        + "\n→ uvicorn api.main:app --reload --port 8000";
+                    errorMsg += "\nAPIサーバーが起動していない可能性があります。\n→ uvicorn api.main:app --reload --port 8000";
                 } else {
                     errorMsg += `\n${error.message}`;
                 }
                 addMessage(errorMsg, "assistant", [], true);
             }
 
-            // ボタンを再有効化
             askBtn.disabled = false;
             questionInput.focus();
         }

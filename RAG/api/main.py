@@ -98,21 +98,21 @@ async def startup_event():
     """
     global rag_system, support_bot
 
-    print("🚀 RAGシステムを初期化しています...")
+    print("[START] RAG system initializing...")
     support_bot = None
 
     try:
         rag_system = OnsenRAG(chunk_size=600, chunk_overlap=75)
-        rag_system.load_data()
+        rag_system.load_from_data_folder()
         # サポートボット（エスカレーション提案付き）
         support_bot = SupportBot(
             rag_query_fn=lambda q: rag_system.query(q, k=3),
             enable_escalation=True,
         )
-        logger.info("✅ RAGシステムの初期化が完了しました")
+        logger.info("RAG system initialized successfully")
     except Exception as error:
-        logger.error("❌ RAGシステムの初期化に失敗: %s", error)
-        logger.warning("⚠️ APIは起動しますが、質問への回答はできません")
+        logger.error("RAG initialization failed: %s", error)
+        logger.warning("API will start but questions cannot be answered")
 
 
 @app.get("/api/health")
@@ -128,7 +128,14 @@ async def health_check():
 
     return {
         "status": "ok" if is_ready else "not_ready",
-        "rag_initialized": is_ready
+        "rag_initialized": is_ready,
+        "sources": [
+            "kusatsu_chunks.json",
+            "hakone_chunks.json",
+            "beppu_chunks.json",
+            "arima_chunks.json",
+            "onsen_knowledge_chunks.json",
+        ] if is_ready else [],
     }
 
 

@@ -32,46 +32,29 @@ from langchain_core.documents import Document
 # .envファイルから環境変数を読み込む
 load_dotenv()
 
+# data フォルダのパス
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+
 # データファイルのパス（プロジェクトルートからの相対パス）
-DEFAULT_DATA_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)),
-    "data",
-    "onsen_knowledge.txt"
-)
+DEFAULT_DATA_PATH = os.path.join(DATA_DIR, "onsen_knowledge.txt")
 
 # サンプル質問ファイルのパス
-DEFAULT_QUESTIONS_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)),
-    "data",
-    "sample_questions.json"
-)
+DEFAULT_QUESTIONS_PATH = os.path.join(DATA_DIR, "sample_questions.json")
 
 # JSONチャンクファイルのパス（草津温泉ガイド等の構造化データ）
-DEFAULT_KUSATSU_CHUNKS_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)),
-    "data",
-    "kusatsu_chunks.json"
-)
+DEFAULT_KUSATSU_CHUNKS_PATH = os.path.join(DATA_DIR, "kusatsu_chunks.json")
 
-# 複数チャンクファイル（草津・箱根・別府・有馬など）を一括読み込みする際のデフォルト
+# 場所別統合チャンクファイル + 温泉基礎知識
 DEFAULT_JSON_CHUNK_PATHS = [
-    DEFAULT_KUSATSU_CHUNKS_PATH,
-    os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "data",
-        "hakone_chunks.json"
-    ),
-    os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "data",
-        "beppu_chunks.json"
-    ),
-    os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "data",
-        "arima_chunks.json"
-    ),
+    os.path.join(DATA_DIR, "kusatsu_chunks.json"),        # 草津温泉（104 chunks）
+    os.path.join(DATA_DIR, "hakone_chunks.json"),          # 箱根温泉（45 chunks）
+    os.path.join(DATA_DIR, "beppu_chunks.json"),           # 別府温泉（20 chunks）
+    os.path.join(DATA_DIR, "arima_chunks.json"),           # 有馬温泉（19 chunks）
+    os.path.join(DATA_DIR, "onsen_knowledge_chunks.json"), # 温泉基礎知識（11 chunks）
 ]
+
+# テキストファイルは全て JSON チャンクに変換済みのため空
+DEFAULT_TXT_PATHS = []
 
 
 class OnsenRAG:
@@ -141,18 +124,23 @@ class OnsenRAG:
 
         if google_key and not google_key.startswith("your_"):
             try:
+                import concurrent.futures
                 from langchain_google_genai import ChatGoogleGenerativeAI
                 llm = ChatGoogleGenerativeAI(
                     model="gemini-2.0-flash",
                     temperature=0,
-                    google_api_key=google_key
+                    google_api_key=google_key,
+                    max_retries=1,
                 )
-                # 接続テスト（クォータ切れ等を早期検出）
-                llm.invoke("test")
-                print("  LLM: Gemini (gemini-2.0-flash) を使用")
+                # 接続テスト（タイムアウト10秒でクォータ切れを早期検出）
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(llm.invoke, "test")
+                    future.result(timeout=10)
+                print("  LLM: Gemini (gemini-2.0-flash)")
                 return llm
             except Exception as e:
-                print(f"  [WARN] Gemini connection error (fallback): {e}")
+                safe_msg = str(e)[:120]
+                print(f"  [WARN] Gemini unavailable (fallback): {safe_msg}")
         if groq_key and not groq_key.startswith("gsk_your"):
             from langchain_groq import ChatGroq
             print("  LLM: Groq (llama-3.3-70b-versatile) を使用")
@@ -306,6 +294,88 @@ class OnsenRAG:
         )
 
         print(f"[OK] Vector DB saved")
+
+    def load_from_data_folder(
+        self,
+        txt_paths: list[str] = None,
+        json_paths: list[str] = None,
+    ) -> None:
+        """
+        RAG/data フォルダ内の全データを読み込み、統合してVector DBに格納
+
+        テキストファイル（onsen_knowledge.txt, beppu.txt 等）と
+        JSONチャンク（草津・箱根・別府・有馬）を一括読み込みし、
+        統合した知識ベースで検索可能にする。
+
+        Args:
+            txt_paths: 読み込むテキストファイルのパスリスト
+                      省略時は DEFAULT_TXT_PATHS（onsen_knowledge + beppu）
+            json_paths: 読み込むJSONチャンクのパスリスト
+                       省略時は DEFAULT_JSON_CHUNK_PATHS（4温泉地）
+        """
+        txt_paths = txt_paths or DEFAULT_TXT_PATHS
+        json_paths = json_paths or DEFAULT_JSON_CHUNK_PATHS
+
+        text_splitter = create_token_text_splitter(
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap,
+        )
+        all_documents = []
+
+        # テキストファイルを読み込み・分割
+        for file_path in txt_paths:
+            if not os.path.exists(file_path):
+                print(f"[SKIP] Not found: {file_path}")
+                continue
+            with open(file_path, "r", encoding="utf-8") as f:
+                text = f.read()
+            doc = Document(page_content=text, metadata={"source": os.path.basename(file_path)})
+            splits = text_splitter.split_documents([doc])
+            all_documents.extend(splits)
+            print(f"[LOAD] {os.path.basename(file_path)}: {len(splits)} chunks")
+
+        # JSONチャンクを読み込み
+        def _to_str(val):
+            if isinstance(val, list):
+                return ",".join(str(v) for v in val)
+            return str(val) if val is not None else ""
+
+        for file_path in json_paths:
+            if not os.path.exists(file_path):
+                print(f"[SKIP] Not found: {file_path}")
+                continue
+            with open(file_path, "r", encoding="utf-8") as f:
+                chunks = json.load(f)
+            for chunk in chunks:
+                meta = chunk.get("metadata", {})
+                tags_raw = meta.get("tags") or meta.get("keywords", [])
+                tags_str = _to_str(tags_raw) if tags_raw else ""
+                doc_metadata = {
+                    "chunk_id": chunk.get("chunk_id", ""),
+                    "source": meta.get("source", os.path.basename(file_path)),
+                    "category": _to_str(meta.get("category", "")),
+                    "section": chunk.get("section", ""),
+                    "area": _to_str(meta.get("area", "")),
+                    "tags": tags_str,
+                }
+                doc = Document(
+                    page_content=chunk.get("content", ""),
+                    metadata=doc_metadata,
+                )
+                all_documents.append(doc)
+            print(f"[LOAD] {os.path.basename(file_path)}: {len(chunks)} chunks")
+
+        if not all_documents:
+            raise FileNotFoundError(
+                "読み込めるデータがありません。\n"
+                f"data フォルダ（{DATA_DIR}）を確認してください。"
+            )
+
+        self.vectorstore = Chroma.from_documents(
+            documents=all_documents,
+            embedding=self.embeddings,
+        )
+        print(f"[OK] Total {len(all_documents)} chunks loaded into Vector DB")
 
     def query(self, question: str, k: int = 3) -> dict:
         """
