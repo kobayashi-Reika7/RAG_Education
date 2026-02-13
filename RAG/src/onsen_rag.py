@@ -1,18 +1,21 @@
 """
 OnsenRAG - 温泉特化RAGシステム
 ==================================
-温泉テキストデータ（data/onsen_knowledge.txt）を読み込み、
 温泉に関する質問に対してRAGで回答を生成する。
 
-このクラスの特徴：
-- 温泉テキストを「■」見出し単位で意味的に分割
-- 日本語に最適化されたEmbeddingモデルとプロンプト
-- 評価用の検索結果取得メソッド付き
+3段階検索パイプライン:
+  質問 → ハイブリッド検索(initial_k件)
+       → Re-ranking(CrossEncoder)
+       → LLM候補抽出
+       → スコア統合 → 上位k件
+       → LLM回答生成
 
-RAG教材としてのポイント：
-- 情報が分散している → 検索が効く
-- 条件付き質問が多い → RAG必須
-- 嘘をつくとすぐ分かる → 精度評価しやすい
+モジュール構成:
+  config.py          - 定数・パス・パラメータ
+  prompts.py         - プロンプトテンプレート
+  data_loader.py     - データ読み込み
+  search_pipeline.py - 検索パイプライン
+  onsen_rag.py       - オーケストレーション（このファイル）
 """
 
 import os
@@ -22,92 +25,49 @@ import hashlib
 import time
 from collections import OrderedDict
 
-# HuggingFaceモデルのリモート確認をスキップ（キャッシュ済みなら高速起動）
-# ※ インポートよりも前に設定しないと効果がない
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-
-from dotenv import load_dotenv
 from langchain_community.vectorstores import Chroma
-from src.text_splitter_utils import (
-    create_token_text_splitter,
-    DEFAULT_CHUNK_SIZE,
-    DEFAULT_CHUNK_OVERLAP,
-)
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 from sentence_transformers import CrossEncoder
 
-# .envファイルから環境変数を読み込む
-load_dotenv()
-
-# data フォルダのパス
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
-
-# データファイルのパス（プロジェクトルートからの相対パス）
-DEFAULT_DATA_PATH = os.path.join(DATA_DIR, "onsen_knowledge.txt")
-
-# サンプル質問ファイルのパス
-DEFAULT_QUESTIONS_PATH = os.path.join(DATA_DIR, "sample_questions.json")
-
-# JSONチャンクファイルのパス（草津温泉ガイド等の構造化データ）
-DEFAULT_KUSATSU_CHUNKS_PATH = os.path.join(DATA_DIR, "kusatsu_chunks.json")
-
-# 場所別統合チャンクファイル + 温泉基礎知識
-DEFAULT_JSON_CHUNK_PATHS = [
-    os.path.join(DATA_DIR, "kusatsu_chunks.json"),        # 草津温泉（104 chunks）
-    os.path.join(DATA_DIR, "hakone_chunks.json"),          # 箱根温泉（45 chunks）
-    os.path.join(DATA_DIR, "beppu_chunks.json"),           # 別府温泉（20 chunks）
-    os.path.join(DATA_DIR, "arima_chunks.json"),           # 有馬温泉（19 chunks）
-    os.path.join(DATA_DIR, "onsen_knowledge_chunks.json"), # 温泉基礎知識（11 chunks）
-]
-
-# テキストファイルは全て JSON チャンクに変換済みのため空
-DEFAULT_TXT_PATHS = []
-
-# ChromaDB永続化先（ディスクに保存して起動時再構築を回避）
-CHROMA_PERSIST_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(__file__)), "chroma_onsen_db"
+from src.config import (
+    DATA_DIR,
+    DEFAULT_DATA_PATH,
+    DEFAULT_QUESTIONS_PATH,
+    DEFAULT_KUSATSU_CHUNKS_PATH,
+    DEFAULT_JSON_CHUNK_PATHS,
+    DEFAULT_TXT_PATHS,
+    CHROMA_PERSIST_DIR,
+    CHROMA_HASH_FILE,
+    LOCATION_KEYWORDS,
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_CROSS_ENCODER_MODEL,
+    CONFIDENCE_THRESHOLD,
+    QUERY_CACHE_MAXSIZE,
+    QUERY_CACHE_TTL,
 )
-# データハッシュファイル（データ変更を検出して再構築するかの判定に使用）
-CHROMA_HASH_FILE = os.path.join(CHROMA_PERSIST_DIR, "_data_hash.txt")
-
-
-# 温泉地名 → chunk_idプレフィックスの対応表
-# 質問文に含まれるキーワードで、どの温泉地のチャンクを検索するか判定する
-LOCATION_KEYWORDS = {
-    "kusatsu": ["草津"],
-    "hakone": ["箱根"],
-    "beppu": ["別府"],
-    "arima": ["有馬"],
-}
+from src.prompts import ANSWER_PROMPT
+from src.data_loader import load_json_chunks, load_txt_files
+from src.text_splitter_utils import (
+    create_token_text_splitter,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_CHUNK_OVERLAP,
+)
+from src import search_pipeline
 
 
 class OnsenRAG:
     """
-    温泉情報に特化したRAGシステム
-
-    温泉テキストデータを「■」見出し単位で意味的に分割し、
-    質問に対して関連するチャンクを検索してLLMで回答を生成する。
-
-    なぜ「■」で分割するのか：
-    - テキストが見出し（■）ごとにまとまった意味を持つ
-    - 機械的な文字数分割より、意味単位の分割のほうが精度が高い
-    - 「冬におすすめの温泉地は？」→「■ 季節ごとの楽しみ方」がヒットしやすい
+    温泉情報に特化したRAGシステム。
 
     使用例:
         rag = OnsenRAG()
-        rag.load_data()
+        rag.load_json_chunks()
         result = rag.query("草津温泉の特徴は？")
         print(result["result"])
     """
-
-    # CrossEncoderモデル名（多言語対応・日本語Re-ranking高精度）
-    # mMARCO（14言語対応MS MARCO）で学習済み。英語専用モデルより日本語精度が大幅向上
-    # 旧: cross-encoder/ms-marco-MiniLM-L-6-v2（英語専用）
-    DEFAULT_CROSS_ENCODER = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
 
     def __init__(
         self,
@@ -118,83 +78,60 @@ class OnsenRAG:
         final_k: int = 3,
     ):
         """
-        OnsenRAGの初期化
-
         Args:
-            chunk_size: チャンクの最大トークン数（デフォルト600、general プリセット）
-            chunk_overlap: チャンク間の重複トークン数（デフォルト75）
+            chunk_size: チャンクの最大トークン数
+            chunk_overlap: チャンク間の重複トークン数
             semantic_weight: ハイブリッド検索でのセマンティック検索の重み（0.0〜1.0）
-                            デフォルト0.5（セマンティックとキーワードを同等に扱う）
-                            0.7 → セマンティック重視、0.3 → キーワード重視
-            initial_k: 初期検索で取得する件数（多めに取ってRe-rankingで絞る）
-            final_k: Re-ranking後に最終採用する件数
-
-        検索パイプライン:
-          質問 → ハイブリッド検索(initial_k件) → Re-ranking(CrossEncoder) → 上位final_k件 → LLM回答
-
-        トークンベース管理の理由：
-        - LLMのコンテキスト制限はトークン数で表現される
-        - 文字数より正確なチャンクサイズ制御が可能
-        - 日本語は1文字≒2〜3トークン程度のため、トークン単位が適切
+            initial_k: 初期検索で取得する件数
+            final_k: 最終採用する件数
         """
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
-
-        # ハイブリッド検索の重み（セマンティック vs キーワード）
         self.semantic_weight = semantic_weight
         self.keyword_weight = 1.0 - semantic_weight
-
-        # Re-ranking用の初期検索件数 / 最終採用件数
         self.initial_k = initial_k
         self.final_k = final_k
 
-        # 日本語対応Embeddingモデル（local_files_only で HuggingFace HTTP チェックを完全スキップ）
+        # Embedding モデル
         self.embeddings = HuggingFaceEmbeddings(
-            model_name="intfloat/multilingual-e5-base",
+            model_name=DEFAULT_EMBEDDING_MODEL,
             model_kwargs={"local_files_only": True},
         )
 
-        # CrossEncoderモデル（Re-ranking用）
-        # Bi-Encoderより低速だが、クエリと文書のペアを直接比較するため高精度
-        # local_files_only=True でリモート確認をスキップし起動を高速化
+        # CrossEncoder モデル（Re-ranking 用）
         print("[INIT] CrossEncoder loading...")
         self.cross_encoder = CrossEncoder(
-            self.DEFAULT_CROSS_ENCODER,
+            DEFAULT_CROSS_ENCODER_MODEL,
             local_files_only=True,
         )
-        print(f"  CrossEncoder: {self.DEFAULT_CROSS_ENCODER}")
+        print(f"  CrossEncoder: {DEFAULT_CROSS_ENCODER_MODEL}")
 
-        # ベクトルストア（セマンティック検索用）
+        # ベクトルストア
         self.vectorstore = None
 
-        # 全ドキュメントリスト（BM25キーワード検索用に保持）
-        self.documents = []
+        # 全ドキュメント（BM25 用）
+        self.documents: list[Document] = []
 
-        # クエリキャッシュ（同一質問の重複LLM呼び出しを回避）
-        # maxsize件まで保持し、TTL秒経過で自動無効化
+        # BM25 キャッシュ
+        self._bm25_all = None
+        self._bm25_by_location: dict = {}
+
+        # クエリキャッシュ
         self._query_cache: OrderedDict = OrderedDict()
-        self._cache_maxsize = 128
-        self._cache_ttl = 300  # 5分
 
-        # 会話コンテキスト: 直前のクエリで検出された温泉地を保持
-        # 「有馬」→「カフェ」のような文脈継続に使用
+        # 会話コンテキスト（直前の温泉地を保持）
         self._last_location: str | None = None
 
-        # LLMの初期化（共通ファクトリ経由: Gemini → Groq → OpenAI）
+        # LLM
         from src.llm_factory import create_llm
         self.llm = create_llm(temperature=0)
 
+    # ============================================================
+    # データ読み込み
+    # ============================================================
+
     def load_data(self, data_path: str = None) -> None:
-        """
-        温泉テキストデータを読み込み、ベクトルDBに保存
-
-        「■」見出しを考慮したセパレータで分割することで、
-        意味的なまとまりを保ったチャンクを作成する。
-
-        Args:
-            data_path: テキストファイルのパス
-                      省略時は data/onsen_knowledge.txt を使用
-        """
+        """テキストファイルを読み込みベクトルDBに保存（レガシー互換）。"""
         file_path = data_path or DEFAULT_DATA_PATH
 
         if not os.path.exists(file_path):
@@ -203,129 +140,44 @@ class OnsenRAG:
                 "data/onsen_knowledge.txt を確認してください。"
             )
 
-        # テキストファイルを読み込み
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
 
         print(f"[LOAD] Onsen data loaded: {len(text)} chars")
 
-        # Documentオブジェクトに変換
         document = Document(page_content=text)
-
-        # トークンベースのテキスト分割（400〜500 tokens、オーバーラップ10〜20%）
-        # separators の優先順位：
-        #   "■ "    → 見出し区切り（最も重要な意味の区切り）
-        #   "\n\n"  → 段落区切り
-        #   "\n"    → 改行
-        #   "。"    → 文末（日本語）
-        #   "、"    → 読点
-        #   " "     → スペース
-        #   ""      → 文字単位（最終手段）
         text_splitter = create_token_text_splitter(
             chunk_size=self.chunk_size,
             chunk_overlap=self.chunk_overlap,
         )
         splits = text_splitter.split_documents([document])
+        print(f"[SPLIT] {len(splits)} chunks")
 
-        print(f"[SPLIT] {len(splits)} chunks (chunk_size={self.chunk_size} tokens)")
-
-        # チャンク内容をプレビュー表示（デバッグ用）
-        for i, split in enumerate(splits):
-            preview = split.page_content[:60].replace("\n", " ")
-            safe_preview = preview.encode("ascii", errors="replace").decode()
-            print(f"  [{i+1}] {safe_preview}...")
-
-        # BM25キーワード検索用にドキュメントを保持
         self.documents = splits
-
-        # ベクトルDBに保存
         self.vectorstore = Chroma.from_documents(
             documents=splits,
-            embedding=self.embeddings
+            embedding=self.embeddings,
+        )
+        print("[OK] Vector DB saved (hybrid search ready)")
+
+    def load_json_chunks(self, json_path: str | list[str] = None) -> None:
+        """JSON チャンクを読み込みベクトルDBに保存する。"""
+        paths = (
+            json_path
+            if isinstance(json_path, list)
+            else [json_path or DEFAULT_KUSATSU_CHUNKS_PATH]
         )
 
-        print(f"\n[OK] Vector DB saved (hybrid search ready)")
-
-    def load_json_chunks(
-        self,
-        json_path: str | list[str] = None,
-    ) -> None:
-        """
-        JSON形式のチャンクデータを読み込み、Vector DBに格納する。
-
-        メタデータ付きの構造化チャンク（chunk_id, metadata, section, content）を
-        ChromaDBに保存。検索時はメタデータでフィルタリング可能。
-        chunk_idは全ファイルで一意になるよう連番で統一（chunk_001〜）。
-
-        Args:
-            json_path: JSONファイルのパス（単一またはリスト）
-                      省略時は data/kusatsu_chunks.json のみ使用
-                      複数指定時は DEFAULT_JSON_CHUNK_PATHS で草津・箱根を一括読み込み
-
-        使用例:
-            rag = OnsenRAG()
-            rag.load_json_chunks()  # 草津のみ
-            rag.load_json_chunks(DEFAULT_JSON_CHUNK_PATHS)  # 草津+箱根
-        """
-        paths = json_path if isinstance(json_path, list) else [json_path or DEFAULT_KUSATSU_CHUNKS_PATH]
-        all_chunks = []
-
-        for file_path in paths:
-            if not os.path.exists(file_path):
-                print(f"[SKIP] Not found: {file_path}")
-                continue
-            with open(file_path, "r", encoding="utf-8") as f:
-                chunks = json.load(f)
-            all_chunks.extend(chunks)
-
-        if not all_chunks:
-            raise FileNotFoundError(
-                "読み込めるJSONチャンクファイルがありません。\n"
-                "data/kusatsu_chunks.json, hakone_chunks.json, beppu_chunks.json, arima_chunks.json を確認してください。"
-            )
-
-        # ChromaDBのメタデータは str/int/float/bool のみ対応のため、
-        # tags/keywords, category, area（list）はカンマ区切り文字列に変換
-        def _to_str(val):
-            if isinstance(val, list):
-                return ",".join(str(v) for v in val)
-            return str(val) if val is not None else ""
-
-        documents = []
-        for chunk in all_chunks:
-            meta = chunk.get("metadata", {})
-            tags_raw = meta.get("tags") or meta.get("keywords", [])
-            tags_str = _to_str(tags_raw) if tags_raw else ""
-            # chunk_idプレフィックスを location メタデータとして格納
-            chunk_id = chunk.get("chunk_id", "")
-            location = chunk_id.split("_")[0] if chunk_id else "unknown"
-            doc_metadata = {
-                "chunk_id": chunk_id,
-                "source": meta.get("source", ""),
-                "category": _to_str(meta.get("category", "")),
-                "section": chunk.get("section", ""),
-                "area": _to_str(meta.get("area", "")),
-                "tags": tags_str,
-                "location": location,
-            }
-            doc = Document(
-                page_content=chunk.get("content", ""),
-                metadata=doc_metadata
-            )
-            documents.append(doc)
-
-        print(f"[LOAD] JSON chunks loaded: {len(documents)}")
-
-        # BM25キーワード検索用にドキュメントを保持
+        documents = load_json_chunks(paths)
         self.documents = documents
 
-        # ChromaDB永続化対応
+        # ChromaDB 永続化
         data_hash = self._compute_data_hash(documents)
         cached = self._load_cached_vectorstore(data_hash)
 
         if cached:
             self.vectorstore = cached
-            print(f"[CACHE HIT] ChromaDB loaded from disk")
+            print("[CACHE HIT] ChromaDB loaded from disk")
         else:
             self.vectorstore = Chroma.from_documents(
                 documents=documents,
@@ -333,99 +185,44 @@ class OnsenRAG:
                 persist_directory=CHROMA_PERSIST_DIR,
             )
             self._save_data_hash(data_hash)
-            print(f"[OK] ChromaDB saved to disk")
+            print("[OK] ChromaDB saved to disk")
 
-        # BM25キャッシュ構築
         self._build_bm25_cache()
-        print(f"[OK] Vector DB saved (hybrid search ready)")
+        print("[OK] Vector DB saved (hybrid search ready)")
 
     def load_from_data_folder(
         self,
         txt_paths: list[str] = None,
         json_paths: list[str] = None,
     ) -> None:
-        """
-        RAG/data フォルダ内の全データを読み込み、統合してVector DBに格納
-
-        テキストファイル（onsen_knowledge.txt, beppu.txt 等）と
-        JSONチャンク（草津・箱根・別府・有馬）を一括読み込みし、
-        統合した知識ベースで検索可能にする。
-
-        Args:
-            txt_paths: 読み込むテキストファイルのパスリスト
-                      省略時は DEFAULT_TXT_PATHS（onsen_knowledge + beppu）
-            json_paths: 読み込むJSONチャンクのパスリスト
-                       省略時は DEFAULT_JSON_CHUNK_PATHS（4温泉地）
-        """
+        """data フォルダ内の全データを統合して読み込む。"""
         txt_paths = txt_paths or DEFAULT_TXT_PATHS
         json_paths = json_paths or DEFAULT_JSON_CHUNK_PATHS
 
-        text_splitter = create_token_text_splitter(
-            chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap,
-        )
-        all_documents = []
+        all_documents: list[Document] = []
 
-        # テキストファイルを読み込み・分割
-        for file_path in txt_paths:
-            if not os.path.exists(file_path):
-                print(f"[SKIP] Not found: {file_path}")
-                continue
-            with open(file_path, "r", encoding="utf-8") as f:
-                text = f.read()
-            doc = Document(page_content=text, metadata={"source": os.path.basename(file_path)})
-            splits = text_splitter.split_documents([doc])
-            all_documents.extend(splits)
-            print(f"[LOAD] {os.path.basename(file_path)}: {len(splits)} chunks")
+        # テキストファイル読み込み
+        if txt_paths:
+            text_splitter = create_token_text_splitter(
+                chunk_size=self.chunk_size,
+                chunk_overlap=self.chunk_overlap,
+            )
+            all_documents.extend(load_txt_files(txt_paths, text_splitter))
 
-        # JSONチャンクを読み込み
-        def _to_str(val):
-            if isinstance(val, list):
-                return ",".join(str(v) for v in val)
-            return str(val) if val is not None else ""
-
-        for file_path in json_paths:
-            if not os.path.exists(file_path):
-                print(f"[SKIP] Not found: {file_path}")
-                continue
-            with open(file_path, "r", encoding="utf-8") as f:
-                chunks = json.load(f)
-            for chunk in chunks:
-                meta = chunk.get("metadata", {})
-                tags_raw = meta.get("tags") or meta.get("keywords", [])
-                tags_str = _to_str(tags_raw) if tags_raw else ""
-                # chunk_idのプレフィックス（"_"より前）を location として格納
-                # 例: "kusatsu_001" → "kusatsu", "arima_010" → "arima"
-                # フィルタリング検索で温泉地ごとの絞り込みに使用する
-                chunk_id = chunk.get("chunk_id", "")
-                location = chunk_id.split("_")[0] if chunk_id else "unknown"
-                doc_metadata = {
-                    "chunk_id": chunk_id,
-                    "source": meta.get("source", os.path.basename(file_path)),
-                    "category": _to_str(meta.get("category", "")),
-                    "section": chunk.get("section", ""),
-                    "area": _to_str(meta.get("area", "")),
-                    "tags": tags_str,
-                    "location": location,
-                }
-                doc = Document(
-                    page_content=chunk.get("content", ""),
-                    metadata=doc_metadata,
-                )
-                all_documents.append(doc)
-            print(f"[LOAD] {os.path.basename(file_path)}: {len(chunks)} chunks")
+        # JSON チャンク読み込み
+        try:
+            all_documents.extend(load_json_chunks(json_paths))
+        except FileNotFoundError:
+            pass  # JSON がなくても txt だけで続行
 
         if not all_documents:
             raise FileNotFoundError(
-                "読み込めるデータがありません。\n"
-                f"data フォルダ（{DATA_DIR}）を確認してください。"
+                f"読み込めるデータがありません。\ndata フォルダ（{DATA_DIR}）を確認してください。"
             )
 
-        # BM25キーワード検索用にドキュメントを保持
         self.documents = all_documents
 
-        # --- ChromaDB永続化（起動高速化の核心） ---
-        # データのハッシュ値を計算し、変更がなければディスクから読み込む
+        # ChromaDB 永続化
         data_hash = self._compute_data_hash(all_documents)
         cached = self._load_cached_vectorstore(data_hash)
 
@@ -433,7 +230,6 @@ class OnsenRAG:
             self.vectorstore = cached
             print(f"[CACHE HIT] ChromaDB loaded from disk ({len(all_documents)} chunks)")
         else:
-            # データが変更されたか初回 → 新規構築して永続化
             print(f"[BUILD] ChromaDB constructing ({len(all_documents)} chunks)...")
             self.vectorstore = Chroma.from_documents(
                 documents=all_documents,
@@ -443,19 +239,20 @@ class OnsenRAG:
             self._save_data_hash(data_hash)
             print(f"[OK] ChromaDB saved to {CHROMA_PERSIST_DIR}")
 
-        # --- BM25キャッシュ（クエリ毎の再構築を回避） ---
         self._build_bm25_cache()
-
         print(f"[OK] Total {len(all_documents)} chunks ready (hybrid search)")
 
-    def _compute_data_hash(self, documents: list[Document]) -> str:
-        """データのハッシュ値を計算（変更検出用）"""
+    # ============================================================
+    # ChromaDB キャッシュ
+    # ============================================================
+
+    @staticmethod
+    def _compute_data_hash(documents: list[Document]) -> str:
         content = "".join(doc.page_content[:50] for doc in documents)
         content += str(len(documents))
         return hashlib.md5(content.encode("utf-8")).hexdigest()
 
     def _load_cached_vectorstore(self, data_hash: str):
-        """永続化されたChromaDBが有効ならロードして返す。無効ならNone"""
         if not os.path.exists(CHROMA_PERSIST_DIR):
             return None
         if not os.path.exists(CHROMA_HASH_FILE):
@@ -466,38 +263,34 @@ class OnsenRAG:
             print("[CACHE MISS] Data changed, rebuilding ChromaDB...")
             return None
         try:
-            vs = Chroma(
+            return Chroma(
                 persist_directory=CHROMA_PERSIST_DIR,
                 embedding_function=self.embeddings,
             )
-            return vs
         except Exception as e:
             print(f"[CACHE ERROR] {e}, rebuilding...")
             return None
 
-    def _save_data_hash(self, data_hash: str):
-        """データハッシュをファイルに保存"""
+    @staticmethod
+    def _save_data_hash(data_hash: str):
         os.makedirs(CHROMA_PERSIST_DIR, exist_ok=True)
         with open(CHROMA_HASH_FILE, "w") as f:
             f.write(data_hash)
 
-    def _build_bm25_cache(self):
-        """
-        BM25 Retrieverを事前構築してキャッシュする。
-        クエリ毎の再構築（数秒のオーバーヘッド）を回避。
+    # ============================================================
+    # BM25 キャッシュ
+    # ============================================================
 
-        温泉地別にもキャッシュし、フィルタリング時に即座に使えるようにする。
-        """
+    def _build_bm25_cache(self):
+        """BM25 Retriever を事前構築してキャッシュする。"""
         if not self.documents:
             self._bm25_all = None
             self._bm25_by_location = {}
             return
 
-        # 全文書のBM25
         self._bm25_all = BM25Retriever.from_documents(self.documents)
         self._bm25_all.k = self.initial_k
 
-        # 温泉地別のBM25
         self._bm25_by_location = {}
         for loc_key in list(LOCATION_KEYWORDS.keys()) + ["onsen"]:
             loc_docs = [
@@ -512,494 +305,111 @@ class OnsenRAG:
         print(f"[BM25] Cached: all={len(self.documents)} docs, "
               f"locations={list(self._bm25_by_location.keys())}")
 
-    def _detect_location(self, question: str) -> str | None:
-        """
-        質問文から温泉地名を検出し、対応するchunk_idプレフィックスを返す。
-
-        なぜ必要か：
-        - 「草津のカフェ」と聞いたのに有馬のチャンクが混ざる問題を防ぐ
-        - 検出された温泉地のチャンクのみに絞り込むことで検索精度が向上する
-
-        判定ロジック：
-        - 1つの温泉地名だけ検出 → その温泉地でフィルタリング
-        - 複数検出 or 検出なし → フィルタリングなし（全チャンクから検索）
-
-        Args:
-            question: ユーザーの質問文
-
-        Returns:
-            str: 温泉地のプレフィックス（例: "kusatsu"）。検出なしはNone
-        """
-        detected = []
-        for location, keywords in LOCATION_KEYWORDS.items():
-            if any(kw in question for kw in keywords):
-                detected.append(location)
-
-        # 1つだけ検出された場合のみフィルタリング
-        # 複数検出時はどちらも必要な可能性があるためフィルタなし
-        if len(detected) == 1:
-            return detected[0]
-        return None
-
-    def _rerank(
-        self,
-        question: str,
-        documents: list[Document],
-        top_k: int = None,
-    ) -> list[tuple[Document, float]]:
-        """
-        ステップ1: 類似度検索結果をCrossEncoderでスコアリング
-
-        なぜ必要か：
-        - 初期検索（Bi-Encoder / BM25）は高速だが精度がやや劣る
-        - CrossEncoderはクエリと文書のペアを直接比較するため高精度
-        - スコアを保持して後段のLLM候補抽出・最終選択で活用する
-
-        Args:
-            question: ユーザーの質問文
-            documents: 初期検索で取得した文書リスト
-            top_k: 返す文書の最大数（Noneで全件返す）
-
-        Returns:
-            list[tuple[Document, float]]: (文書, CrossEncoderスコア)のリスト（スコア降順）
-        """
-        if not documents:
-            return []
-
-        # クエリと各文書のペアを作成し、CrossEncoderでスコアリング
-        pairs = [[question, doc.page_content] for doc in documents]
-        scores = self.cross_encoder.predict(pairs)
-
-        # スコアと文書を紐付け、スコア降順でソート
-        doc_score_pairs = sorted(
-            zip(documents, scores),
-            key=lambda x: x[1],
-            reverse=True,
-        )
-
-        # top_k指定があれば上位のみ返す
-        if top_k is not None:
-            doc_score_pairs = list(doc_score_pairs)[:top_k]
-
-        result = list(doc_score_pairs)
-        print(f"[RERANK] {len(documents)}件をCrossEncoderでスコアリング → {len(result)}件")
-        for i, (doc, score) in enumerate(result[:5]):
-            cid = doc.metadata.get("chunk_id", "?")
-            print(f"  [{i+1}] CE_score={score:.4f} chunk_id={cid}")
-
-        return result
-
-    # LLM候補抽出用プロンプト
-    # 各文書の関連度を0〜10で評価し、上位を選定する
-    LLM_EXTRACT_PROMPT = """あなたは検索結果の関連度を評価する専門家です。
-以下の【質問】に対して、各【候補文書】がどれだけ関連しているかを0〜10の整数で評価してください。
-
-【評価基準】
-- 10: 質問に対する直接的な回答が含まれている
-- 7-9: 質問に強く関連する情報が含まれている
-- 4-6: 部分的に関連する情報がある
-- 1-3: ほぼ関連しない
-- 0: 完全に無関連
-
-【質問】
-{question}
-
-【候補文書】
-{candidates}
-
-【回答フォーマット】（必ずこの形式で回答）
-chunk_id:スコア
-例:
-kusatsu_001:8
-kusatsu_015:3
-"""
-
-    def _llm_extract_candidates(
-        self,
-        question: str,
-        scored_docs: list[tuple[Document, float]],
-        top_k: int = 5,
-    ) -> list[tuple[Document, float, float]]:
-        """
-        ステップ2: LLMで各候補文書の関連度を評価し、上位top_k件を抽出
-
-        なぜLLM評価が有効か：
-        - CrossEncoderは汎用的な文書関連度を測定するが、質問の意図を深く理解しない
-        - LLMは質問の意図を理解し、「本当に回答に使える情報か」を判断できる
-        - 例: 「草津のカフェ」→ CrossEncoderは"草津"を含む全文書を高スコアにするが、
-          LLMは「カフェ情報」を含む文書のみを高く評価する
-
-        Args:
-            question: ユーザーの質問文
-            scored_docs: (文書, CrossEncoderスコア)のリスト
-            top_k: LLM評価後に返す上位件数
-
-        Returns:
-            list[tuple[Document, float, float]]:
-                (文書, CrossEncoderスコア, LLMスコア)のリスト（LLMスコア降順）
-        """
-        if not scored_docs:
-            return []
-
-        # 候補文書をフォーマット
-        candidates_text = ""
-        doc_map = {}  # chunk_id → (Document, CE_score) のマップ
-        for i, (doc, ce_score) in enumerate(scored_docs):
-            cid = doc.metadata.get("chunk_id", f"doc_{i+1}")
-            # LLMに送るコンテキスト（長すぎる場合は切り詰め）
-            content = doc.page_content[:300]
-            candidates_text += f"\n[{cid}]\n{content}\n"
-            doc_map[cid] = (doc, ce_score)
-
-        # LLMに候補評価を依頼
-        prompt = PromptTemplate(
-            template=self.LLM_EXTRACT_PROMPT,
-            input_variables=["question", "candidates"]
-        )
-        chain = prompt | self.llm
-
-        try:
-            response = chain.invoke({
-                "question": question,
-                "candidates": candidates_text,
-            })
-            response_text = response.content if hasattr(response, "content") else str(response)
-        except Exception as e:
-            # LLM呼び出し失敗時はCrossEncoderスコアのみで上位を返す
-            print(f"[LLM_EXTRACT] LLM評価失敗、CEスコアで代替: {str(e)[:80]}")
-            return [
-                (doc, ce_score, 0.0)
-                for doc, ce_score in scored_docs[:top_k]
-            ]
-
-        # LLMのレスポンスからスコアを解析
-        # フォーマット: "chunk_id:スコア" の各行をパース
-        llm_scores = {}
-        for line in response_text.strip().split("\n"):
-            line = line.strip()
-            if ":" not in line:
-                continue
-            parts = line.rsplit(":", 1)
-            if len(parts) != 2:
-                continue
-            cid_part = parts[0].strip()
-            try:
-                score_val = float(parts[1].strip())
-                # 0〜10の範囲にクリップ
-                score_val = max(0.0, min(10.0, score_val))
-                llm_scores[cid_part] = score_val
-            except ValueError:
-                continue
-
-        # (Document, CEスコア, LLMスコア)を構築
-        results = []
-        for cid, (doc, ce_score) in doc_map.items():
-            llm_score = llm_scores.get(cid, 0.0)
-            results.append((doc, ce_score, llm_score))
-
-        # LLMスコア降順でソートし、上位top_k件を返す
-        results.sort(key=lambda x: x[2], reverse=True)
-        results = results[:top_k]
-
-        print(f"[LLM_EXTRACT] {len(scored_docs)}件 → LLM評価で上位{len(results)}件を抽出")
-        for i, (doc, ce_score, llm_score) in enumerate(results):
-            cid = doc.metadata.get("chunk_id", "?")
-            print(f"  [{i+1}] LLM={llm_score:.0f}/10 CE={ce_score:.4f} chunk_id={cid}")
-
-        return results
-
-    # 信頼度閾値: CrossEncoderスコアがこの値未満の候補は除外
-    # mMARCOモデルはlogitを出力（範囲: 約-10〜+10）
-    # -3.0未満は「ほぼ無関連」と判断（短いクエリでも上位候補を残す）
-    CONFIDENCE_THRESHOLD = -3.0
-
-    def _final_selection(
-        self,
-        candidates: list[tuple[Document, float, float]],
-        top_k: int = 3,
-        ce_weight: float = 0.4,
-        llm_weight: float = 0.6,
-    ) -> list[Document]:
-        """
-        ステップ3: CrossEncoderスコアとLLMスコアを統合し、最終的な上位文書を選定
-
-        スコア統合の計算式：
-          final_score = ce_weight * normalize(CE_score) + llm_weight * normalize(LLM_score)
-
-        信頼度フィルタ:
-          CrossEncoderスコアが CONFIDENCE_THRESHOLD 未満の候補は除外。
-          全候補が閾値以下の場合は空リストを返し、queryで「該当情報なし」となる。
-
-        Args:
-            candidates: (文書, CrossEncoderスコア, LLMスコア)のリスト
-            top_k: 最終的に返す件数
-            ce_weight: CrossEncoderスコアの重み（デフォルト0.4）
-            llm_weight: LLMスコアの重み（デフォルト0.6）
-
-        Returns:
-            list[Document]: 最終選定された上位top_k件のドキュメント
-        """
-        if not candidates:
-            return []
-
-        # --- 信頼度フィルタ: 閾値未満の候補を除外 ---
-        confident = [
-            (doc, ce, llm) for doc, ce, llm in candidates
-            if ce >= self.CONFIDENCE_THRESHOLD
-        ]
-        if not confident:
-            print(f"[FINAL] 全候補のCEスコアが閾値({self.CONFIDENCE_THRESHOLD})未満 → 該当情報なし")
-            return []
-
-        if len(confident) < len(candidates):
-            print(f"[FINAL] 信頼度フィルタ: {len(candidates)}件 → {len(confident)}件 "
-                  f"(閾値={self.CONFIDENCE_THRESHOLD})")
-
-        # CrossEncoderスコアを0〜1に正規化
-        ce_scores = [ce for _, ce, _ in confident]
-        ce_min, ce_max = min(ce_scores), max(ce_scores)
-        ce_range = ce_max - ce_min if ce_max != ce_min else 1.0
-
-        # LLMスコアを0〜1に正規化（元は0〜10）
-        # 統合スコアを計算
-        final_scored = []
-        for doc, ce_score, llm_score in confident:
-            ce_norm = (ce_score - ce_min) / ce_range
-            llm_norm = llm_score / 10.0
-            final_score = ce_weight * ce_norm + llm_weight * llm_norm
-            final_scored.append((doc, final_score, ce_score, llm_score))
-
-        # 統合スコア降順でソート
-        final_scored.sort(key=lambda x: x[1], reverse=True)
-        top_results = final_scored[:top_k]
-
-        print(f"[FINAL] スコア統合（CE×{ce_weight} + LLM×{llm_weight}）→ 上位{len(top_results)}件を最終選定")
-        for i, (doc, final, ce, llm) in enumerate(top_results):
-            cid = doc.metadata.get("chunk_id", "?")
-            print(f"  [{i+1}] final={final:.4f} (CE={ce:.4f} LLM={llm:.0f}/10) chunk_id={cid}")
-
-        return [doc for doc, _, _, _ in top_results]
-
-    def _hybrid_search(self, question: str, k: int = 3) -> list[Document]:
-        """
-        3段階検索パイプライン：類似度検索・スコアリング → LLM候補抽出 → 最終選択
-
-        処理の流れ：
-          0. 温泉地フィルタ（質問から地名検出 → 該当チャンクのみ対象）
-          1. 類似度検索・スコアリング
-             - セマンティック検索（initial_k件）+ BM25キーワード検索（initial_k件）
-             - RRF（Reciprocal Rank Fusion）で統合
-             - CrossEncoderで全候補をスコアリング
-          2. LLM候補抽出（上位5件）
-             - LLMが各候補の関連度を0〜10で評価
-             - 質問の意図を理解した上で本当に有用な文書を選定
-          3. 最終選択（スコア統合）
-             - CrossEncoderスコア × 0.4 + LLMスコア × 0.6 で統合
-             - 上位k件を最終回答用に選定
-
-        Args:
-            question: ユーザーの質問文
-            k: 最終的に返す検索結果の件数
-
-        Returns:
-            list[Document]: 3段階選定を経た上位k件のドキュメント
-        """
-        # 温泉地名を検出してフィルタリング条件を決定
-        location = self._detect_location(question)
-
-        # 会話コンテキスト: 温泉地が検出されなかった場合、直前の温泉地を引き継ぐ
-        # 例:「有馬」→「カフェ」と続けて聞いた場合、「カフェ」を有馬コンテキストで検索
-        if location:
-            self._last_location = location
-        elif self._last_location:
-            location = self._last_location
-            print(f"[CONTEXT] 温泉地未検出 → 直前のコンテキスト継続: {location}")
-
-        # 初期検索は多めに取得（後段で絞るため）
-        search_k = self.initial_k
-
-        # ========================================
-        # ステップ1: 類似度検索、スコアリング
-        # ========================================
-
-        # --- セマンティック検索（ベクトル類似度） ---
-        semantic_kwargs = {"k": search_k}
-        if location:
-            semantic_kwargs["filter"] = {
-                "$or": [
-                    {"location": {"$eq": location}},
-                    {"location": {"$eq": "onsen"}},
-                ]
-            }
-        vector_retriever = self.vectorstore.as_retriever(
-            search_kwargs=semantic_kwargs
-        )
-        semantic_docs = vector_retriever.invoke(question)
-
-        # --- BM25キーワード検索（キャッシュ済みRetrieverを使用） ---
-        bm25_docs = []
-        if location and hasattr(self, "_bm25_by_location"):
-            # 温泉地別のキャッシュ済みBM25を使用（クエリ毎の再構築を回避）
-            loc_retriever = self._bm25_by_location.get(location)
-            if loc_retriever:
-                bm25_docs = loc_retriever.invoke(question)
-            # 温泉基礎知識のBM25も追加
-            onsen_retriever = self._bm25_by_location.get("onsen")
-            if onsen_retriever:
-                bm25_docs.extend(onsen_retriever.invoke(question))
-        elif hasattr(self, "_bm25_all") and self._bm25_all:
-            # フィルタなし：全文書キャッシュ済みBM25を使用
-            bm25_docs = self._bm25_all.invoke(question)
-
-        # --- RRF（Reciprocal Rank Fusion）で統合 ---
-        RRF_K = 60
-        doc_scores = {}
-        doc_map = {}
-
-        for rank, doc in enumerate(semantic_docs):
-            content = doc.page_content
-            score = self.semantic_weight / (rank + RRF_K)
-            doc_scores[content] = doc_scores.get(content, 0) + score
-            doc_map[content] = doc
-
-        for rank, doc in enumerate(bm25_docs):
-            content = doc.page_content
-            score = self.keyword_weight / (rank + RRF_K)
-            doc_scores[content] = doc_scores.get(content, 0) + score
-            doc_map[content] = doc
-
-        sorted_contents = sorted(
-            doc_scores.keys(),
-            key=lambda c: doc_scores[c],
-            reverse=True,
-        )
-        rrf_results = [doc_map[c] for c in sorted_contents]
-
-        loc_label = f"location={location} | " if location else ""
-        print(f"[STEP1] 類似度検索 {loc_label}"
-              f"semantic={len(semantic_docs)}件 + BM25={len(bm25_docs)}件 "
-              f"→ RRF統合={len(rrf_results)}件")
-
-        # --- CrossEncoderでスコアリング ---
-        scored_docs = self._rerank(question, rrf_results)
-
-        # ========================================
-        # ステップ2: LLM候補抽出（上位5件）
-        # ========================================
-        # 候補が少ない場合（≤5件）はLLM呼び出しをスキップして高速化
-        # LLM APIコールは数秒かかるため、候補が少なければ不要
-        if len(scored_docs) > self.final_k + 2:
-            llm_candidates = self._llm_extract_candidates(
-                question, scored_docs, top_k=self.final_k + 2
-            )
-        else:
-            # CrossEncoderスコアのみで続行（LLMスコア=0）
-            llm_candidates = [
-                (doc, ce_score, 0.0)
-                for doc, ce_score in scored_docs
-            ]
-            print(f"[LLM_EXTRACT] 候補{len(scored_docs)}件 ≤ "
-                  f"{self.final_k + 2}件 → LLM評価スキップ（高速化）")
-
-        # ========================================
-        # ステップ3: 最終選択（スコア統合）
-        # ========================================
-        final_results = self._final_selection(llm_candidates, top_k=k)
-
-        return final_results
-
-    # RAG専用プロンプトテンプレート（文脈ベース・チャンクID非表示）
-    PROMPT_TEMPLATE = """あなたはRAGシステム専用の日本語質問応答アシスタントです。
-以下の【文脈】は、検索によって取得された関連性の高い上位3件の情報です。
-
-【厳守ルール】
-- 必ず【文脈】に含まれる事実のみを使用して回答してください
-- 文脈に書かれていない内容を推測・補完・一般知識で補わないでください
-- 分からない場合は「文脈内に該当情報がないため分かりません」と回答してください
-- 根拠となるチャンクID・参照ソース・文書名は一切表示しないでください
-- 回答は簡潔で分かりやすい日本語にしてください
-
-【文脈】
-{context}
-
-【質問】
-{question}
-
-【回答】
-"""
+    # ============================================================
+    # クエリキャッシュ
+    # ============================================================
 
     def _cache_key(self, question: str, k: int) -> str:
-        """クエリキャッシュのキーを生成"""
-        return hashlib.md5(f"{question}::{k}".encode("utf-8")).hexdigest()
+        loc = self._last_location or ""
+        return hashlib.md5(f"{question}::{k}::{loc}".encode("utf-8")).hexdigest()
 
     def _get_from_cache(self, key: str) -> dict | None:
-        """キャッシュからクエリ結果を取得（TTL切れは自動削除）"""
         if key not in self._query_cache:
             return None
         entry = self._query_cache[key]
-        if time.time() - entry["timestamp"] > self._cache_ttl:
+        if time.time() - entry["timestamp"] > QUERY_CACHE_TTL:
             del self._query_cache[key]
             return None
-        # LRU: 使用されたエントリを末尾に移動
         self._query_cache.move_to_end(key)
         print(f"[CACHE HIT] クエリキャッシュヒット（TTL残: "
-              f"{self._cache_ttl - (time.time() - entry['timestamp']):.0f}秒）")
+              f"{QUERY_CACHE_TTL - (time.time() - entry['timestamp']):.0f}秒）")
         return entry["result"]
 
     def _put_to_cache(self, key: str, result: dict):
-        """クエリ結果をキャッシュに格納（maxsize超過時はLRU削除）"""
-        if len(self._query_cache) >= self._cache_maxsize:
-            self._query_cache.popitem(last=False)  # 最古のエントリを削除
+        if len(self._query_cache) >= QUERY_CACHE_MAXSIZE:
+            self._query_cache.popitem(last=False)
         self._query_cache[key] = {
             "result": result,
             "timestamp": time.time(),
         }
 
+    # ============================================================
+    # 回答生成
+    # ============================================================
+
     @staticmethod
     def _strip_chunk_ids(text: str) -> str:
-        """
-        LLM回答から「根拠チャンクID:」セクションを除去する。
-
-        プロンプトでチャンクID非表示を指示しているが、LLMが従わない場合の
-        フォールバック処理。「根拠チャンクID:」以降の行を全て削除する。
-        """
-        # 「根拠チャンクID」「参照チャンク」等のヘッダー以降を除去
+        """LLM 回答から根拠・出典セクションを除去する。"""
+        # ヘッダー以降を除去（コロン有無両対応）
         text = re.split(
-            r'\n*(?:根拠チャンクID|根拠チャンク|参照チャンクID|参照ソース|chunk_id)\s*[:：]',
+            r'\n*[#*_\-\s]*'
+            r'(?:根拠\s*チャンク\s*I\s*D|根拠\s*チャンク|参照\s*チャンク\s*I\s*D|参照\s*チャンク'
+            r'|参照\s*ソース|参照元|参考\s*情報|参考\s*文献|出典|引用元'
+            r'|chunk_id|source|reference)'
+            r'[*_\s]*[:：]?',
             text,
+            flags=re.IGNORECASE,
         )[0]
-        return text.strip()
+        # インライン参照パターン (arima_001), [kusatsu_002] 等
+        text = re.sub(
+            r'[\(（\[]\s*(?:arima|kusatsu|hakone|beppu|onsen_knowledge)_\d+'
+            r'(?:\s*[,、]\s*(?:arima|kusatsu|hakone|beppu|onsen_knowledge)_\d+)*'
+            r'\s*[\)）\]]',
+            '',
+            text,
+        )
+        # 行内の chunk_id パターン（括弧なし）
+        text = re.sub(
+            r'(?:arima|kusatsu|hakone|beppu|onsen_knowledge)_\d{2,}',
+            '',
+            text,
+        )
+        # 「根拠チャンクID」等を含む行を丸ごと削除
+        text = re.sub(
+            r'^.*(?:根拠チャンク|参照ソース|参照元|出典|chunk_id).*$',
+            '',
+            text,
+            flags=re.MULTILINE | re.IGNORECASE,
+        )
+        return re.sub(r'\n{3,}', '\n\n', text).strip()
 
     def query(self, question: str, k: int = 3) -> dict:
         """
-        温泉に関する質問に対してRAGで回答を生成
-
-        Args:
-            question: 質問文（日本語）
-                     例: "冬におすすめの温泉地は？"
-            k: 検索結果の件数（デフォルト3件）
+        温泉に関する質問に対してRAGで回答を生成する。
 
         Returns:
-            dict: 回答結果
-                - "result": LLMが生成した回答テキスト
-                - "source_documents": 参照したDocumentリスト
-                - "chunk_ids": 参照したチャンクIDリスト
+            dict: {"result": 回答テキスト, "source_documents": Documentリスト, "chunk_ids": IDリスト}
         """
         if self.vectorstore is None:
-            raise ValueError(
-                "データが未読み込みです。先にload_data()を実行してください。"
-            )
+            raise ValueError("データが未読み込みです。先にload_data()を実行してください。")
 
-        # --- クエリキャッシュ確認 ---
+        # クエリキャッシュ確認
         cache_key = self._cache_key(question, k)
         cached = self._get_from_cache(cache_key)
         if cached is not None:
             return cached
 
-        # ハイブリッド検索（セマンティック + BM25キーワード + 温泉地フィルタ）
-        docs = self._hybrid_search(question, k=k)
+        # 3段階検索パイプライン
+        docs, location = search_pipeline.hybrid_search(
+            question,
+            vectorstore=self.vectorstore,
+            cross_encoder=self.cross_encoder,
+            llm=self.llm,
+            semantic_weight=self.semantic_weight,
+            keyword_weight=self.keyword_weight,
+            initial_k=self.initial_k,
+            final_k=self.final_k,
+            bm25_all=self._bm25_all,
+            bm25_by_location=self._bm25_by_location,
+            last_location=self._last_location,
+            k=k,
+        )
 
-        # コンテキストを構築（チャンクIDはLLMに渡さず、API応答用に内部追跡）
+        # 会話コンテキスト更新
+        if location:
+            self._last_location = location
+
+        # コンテキスト構築
         context_parts = []
         chunk_ids = []
         for doc in docs:
@@ -1013,16 +423,14 @@ kusatsu_015:3
 
         context = "\n\n---\n\n".join(context_parts) if context_parts else "（該当する文脈なし）"
 
+        # LLM 回答生成（429リトライ付き）
+        from src.llm_factory import invoke_with_retry
         prompt = PromptTemplate(
-            template=self.PROMPT_TEMPLATE,
-            input_variables=["context", "question"]
+            template=ANSWER_PROMPT,
+            input_variables=["context", "question"],
         )
         chain = prompt | self.llm
-
-        response = chain.invoke({"context": context, "question": question})
-        answer = response.content if hasattr(response, "content") else str(response)
-
-        # LLMがプロンプト指示に従わずチャンクIDを出力した場合に除去
+        answer = invoke_with_retry(chain, {"context": context, "question": question})
         answer = self._strip_chunk_ids(answer)
 
         result = {
@@ -1031,55 +439,45 @@ kusatsu_015:3
             "chunk_ids": chunk_ids,
         }
 
-        # --- キャッシュに格納 ---
         self._put_to_cache(cache_key, result)
-
         return result
 
+    # ============================================================
+    # 評価
+    # ============================================================
+
     def search_chunks(self, question: str, k: int = 3) -> list:
-        """
-        質問に対してどのチャンクが検索されるかを確認（評価用）
-
-        RAGの精度を確認するために使用する。
-        LLMの回答生成は行わず、検索結果のみを返す。
-
-        Args:
-            question: 検索クエリ
-            k: 取得件数
-
-        Returns:
-            list: 検索結果のDocumentリスト
-        """
+        """検索結果のみを返す（評価用・LLM 回答生成なし）。"""
         if self.vectorstore is None:
             raise ValueError("データが未読み込みです。")
 
-        # ハイブリッド検索（セマンティック + BM25キーワード + 温泉地フィルタ）
-        results = self._hybrid_search(question, k=k)
+        results, _ = search_pipeline.hybrid_search(
+            question,
+            vectorstore=self.vectorstore,
+            cross_encoder=self.cross_encoder,
+            llm=self.llm,
+            semantic_weight=self.semantic_weight,
+            keyword_weight=self.keyword_weight,
+            initial_k=self.initial_k,
+            final_k=self.final_k,
+            bm25_all=self._bm25_all,
+            bm25_by_location=self._bm25_by_location,
+            last_location=self._last_location,
+            k=k,
+        )
 
         print(f"\n[SEARCH] Question: 「{question}」")
         print(f"   検索結果: {len(results)}件")
         for i, doc in enumerate(results):
             content = doc.page_content.replace("\n", " ")
-            preview = content[:100] + "..." \
-                if len(content) > 100 else content
+            preview = content[:100] + "..." if len(content) > 100 else content
             safe_preview = preview.encode("ascii", errors="replace").decode()
             print(f"  [{i+1}] {safe_preview}")
 
         return results
 
     def evaluate(self, questions_path: str = None) -> list:
-        """
-        サンプル質問を使ってRAGの精度を一括評価
-
-        data/sample_questions.json の質問を順番に実行し、
-        検索されたチャンクと期待されるチャンクを比較する。
-
-        Args:
-            questions_path: 質問ファイルのパス（省略時はデフォルト）
-
-        Returns:
-            list: 評価結果のリスト
-        """
+        """サンプル質問を使ってRAGの精度を一括評価する。"""
         if self.vectorstore is None:
             raise ValueError("データが未読み込みです。")
 
@@ -1098,21 +496,12 @@ kusatsu_015:3
             expected = q["expected_chunk"]
             keywords = q["expected_answer_keywords"]
 
-            # 検索実行
             docs = self.search_chunks(question, k=3)
 
-            # キーワードが検索結果に含まれているか確認
             all_text = " ".join([d.page_content for d in docs])
-            matched_keywords = [
-                kw for kw in keywords if kw in all_text
-            ]
-            # マッチ率を計算（0.0〜1.0）
-            match_rate = len(matched_keywords) / len(keywords) \
-                if keywords else 0.0
-
-            # 結果を判定（cp932対応で絵文字を避ける）
-            status = "[OK]" if match_rate >= 0.5 else "[WARN]" \
-                if match_rate > 0 else "[BAD]"
+            matched_keywords = [kw for kw in keywords if kw in all_text]
+            match_rate = len(matched_keywords) / len(keywords) if keywords else 0.0
+            status = "[OK]" if match_rate >= 0.5 else "[WARN]" if match_rate > 0 else "[BAD]"
 
             print(f"   {status} キーワード一致率: {match_rate:.0%} "
                   f"({len(matched_keywords)}/{len(keywords)})")
@@ -1124,18 +513,16 @@ kusatsu_015:3
                 "expected_chunk": expected,
                 "match_rate": match_rate,
                 "matched_keywords": matched_keywords,
-                "status": status
+                "status": status,
             })
 
-        # サマリー表示
         total = len(results)
         good = sum(1 for r in results if r["status"] == "[OK]")
         warn = sum(1 for r in results if r["status"] == "[WARN]")
         bad = sum(1 for r in results if r["status"] == "[BAD]")
 
         print("=" * 60)
-        print(f"Summary: OK={good} / WARN={warn} / BAD={bad} "
-              f"（全{total}問）")
+        print(f"Summary: OK={good} / WARN={warn} / BAD={bad} （全{total}問）")
         print("=" * 60)
 
         return results

@@ -569,10 +569,8 @@
                 <p>気になることをお気軽にどうぞ</p>
                 <div class="examples">
                     <button class="example-btn" onclick="useExample(this)"><span class="example-icon">🗾</span>草津温泉の特徴は？</button>
-                    <button class="example-btn" onclick="useExample(this)"><span class="example-icon">🧖</span>美肌の湯とは？</button>
                     <button class="example-btn" onclick="useExample(this)"><span class="example-icon">🍁</span>有馬温泉のおすすめは？</button>
                     <button class="example-btn" onclick="useExample(this)"><span class="example-icon">♨</span>別府温泉の泉質は？</button>
-                    <button class="example-btn" onclick="useExample(this)"><span class="example-icon">🍜</span>草津の食べ歩きスポット</button>
                 </div>
                 <p class="hint">質問例をタップするか、下の入力欄に自由に入力できます</p>
             </div>
@@ -593,6 +591,7 @@
         const statusEl = document.getElementById("status");
         const statusText = document.getElementById("statusText");
         let isFirstMessage = true;
+        const chatHistory = []; // 会話履歴（{role, content}）
 
         const STATUS_LABELS = {
             Checking: "接続確認中",
@@ -659,6 +658,16 @@
             askQuestion();
         }
 
+        function stripChunkRefs(text) {
+            // 根拠チャンクID / 参照ソース / 出典 等のヘッダー以降を全削除
+            text = text.split(/\n*[#*_\-\s]*(?:根拠チャンク\s*ID|根拠チャンク|参照チャンク\s*ID|参照チャンク|参照ソース|参照元|参考情報|参考文献|出典|引用元|chunk_id|source|reference)[*_\s]*[：:]/i)[0] || text;
+            // インライン参照 (arima_001), [kusatsu_002] 等を除去
+            text = text.replace(/[\(（\[]\s*(?:arima|kusatsu|hakone|beppu|onsen_knowledge)_\d+(?:\s*[,、]\s*(?:arima|kusatsu|hakone|beppu|onsen_knowledge)_\d+)*\s*[\)）\]]/g, '');
+            // 行頭の "根拠チャンクID:" 等を含む行全体を除去
+            text = text.replace(/^.*(?:根拠チャンク|参照ソース|参照元|出典|chunk_id).*$/gim, '');
+            return text.replace(/\n{3,}/g, '\n\n').trim();
+        }
+
         async function askQuestion() {
             const question = questionInput.value.trim();
             if (!question) return;
@@ -666,13 +675,16 @@
             questionInput.value = "";
             askBtn.disabled = true;
             addMessage(question, "user");
+            chatHistory.push({ role: "user", content: question });
             setLoading(true);
 
             try {
+                // 直近4件の履歴を送信（現在の質問を除く）
+                const recentHistory = chatHistory.slice(-5, -1);
                 const response = await fetch(`${API_BASE}/api/ask`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ question }),
+                    body: JSON.stringify({ question, history: recentHistory }),
                 });
 
                 if (!response.ok) {
@@ -682,7 +694,10 @@
 
                 const data = await response.json();
                 setLoading(false);
-                addMessage(data.answer, "assistant");
+                // 根拠チャンクID等の参照情報をフロントエンド側でも除去
+                const cleanAnswer = stripChunkRefs(data.answer);
+                addMessage(cleanAnswer, "assistant");
+                chatHistory.push({ role: "assistant", content: cleanAnswer });
             } catch (error) {
                 setLoading(false);
                 let errorMsg = "回答の取得に失敗しました。";

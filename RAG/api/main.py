@@ -114,14 +114,22 @@ app.add_middleware(
 # ============================
 # リクエスト・レスポンスモデル
 # ============================
+class ChatMessage(BaseModel):
+    """会話履歴の1メッセージ"""
+    role: str
+    content: str
+
+
 class QuestionRequest(BaseModel):
     """
     質問リクエストのデータ構造
 
     Attributes:
         question: ユーザーが入力した質問文（最大500文字）
+        history: 直近の会話履歴（オプション）
     """
     question: str
+    history: list[ChatMessage] = []
 
     @field_validator("question")
     @classmethod
@@ -147,13 +155,11 @@ class AnswerResponse(BaseModel):
     Attributes:
         answer: RAGが生成した回答テキスト
         sources: 参照したチャンクの内容
-        chunk_ids: 参照したチャンクIDリスト
         needs_escalation: 担当者へのおつなぎを提案するか
         response_time_ms: 応答時間（ミリ秒）
     """
     answer: str
     sources: list[str] = []
-    chunk_ids: list[str] = []
     needs_escalation: bool = False
     response_time_ms: int = 0
 
@@ -161,6 +167,45 @@ class AnswerResponse(BaseModel):
 # ============================
 # ヘルパー関数
 # ============================
+# 温泉地名キーワード（会話履歴から温泉地を検出するため）
+_LOCATION_NAMES = {
+    "草津": "草津温泉",
+    "有馬": "有馬温泉",
+    "別府": "別府温泉",
+    "箱根": "箱根温泉",
+}
+
+
+def _resolve_question(
+    question: str,
+    history: list[ChatMessage],
+) -> str:
+    """
+    会話履歴から文脈を読み取り、曖昧なクエリを補完する。
+
+    例: 会話で「有馬温泉」の話題後に「効能」と聞いた場合
+        → 「有馬温泉の効能」に補完
+    """
+    # 質問に温泉地名が含まれていれば補完不要
+    if any(name in question for name in _LOCATION_NAMES):
+        return question
+
+    # 質問が十分に長い場合（具体的な質問）は補完不要
+    if len(question) > 15:
+        return question
+
+    if not history:
+        return question
+
+    # 履歴を新しい順に走査し、最後に言及された温泉地名を取得
+    for msg in reversed(history):
+        for keyword, full_name in _LOCATION_NAMES.items():
+            if keyword in msg.content:
+                return f"{full_name}の{question}"
+
+    return question
+
+
 def _get_rag() -> OnsenRAG:
     """RAGシステムを取得（未初期化時は503エラー）"""
     rag = getattr(app.state, "rag_system", None)
@@ -213,12 +258,17 @@ async def ask_question(request: QuestionRequest):
     bot = _get_bot()
     start_time = time.time()
 
+    # 会話履歴からクエリを補完（短い質問で温泉地名がない場合）
+    resolved_question = _resolve_question(request.question, request.history)
+    if resolved_question != request.question:
+        logger.info("クエリ補完: '%s' → '%s'", request.question, resolved_question)
+
     last_error = None
     for attempt in range(MAX_RETRIES):
         try:
             if bot is not None:
                 def _sync_support_ask():
-                    return bot.ask(request.question, k=3)
+                    return bot.ask(resolved_question, k=3)
 
                 loop = asyncio.get_event_loop()
                 resp = await asyncio.wait_for(
@@ -229,7 +279,6 @@ async def ask_question(request: QuestionRequest):
                 return AnswerResponse(
                     answer=resp.answer,
                     sources=resp.sources,
-                    chunk_ids=resp.chunk_ids,
                     needs_escalation=resp.needs_escalation,
                     response_time_ms=elapsed_ms,
                 )
@@ -238,7 +287,7 @@ async def ask_question(request: QuestionRequest):
             rag = _get_rag()
 
             def _sync_query():
-                return rag.query(request.question, k=3)
+                return rag.query(resolved_question, k=3)
 
             loop = asyncio.get_event_loop()
             result = await asyncio.wait_for(
@@ -246,7 +295,6 @@ async def ask_question(request: QuestionRequest):
                 timeout=LLM_TIMEOUT_SEC,
             )
             sources = []
-            chunk_ids = result.get("chunk_ids", [])
             if "source_documents" in result:
                 sources = [doc.page_content[:200] for doc in result["source_documents"]]
             answer = result["result"]
@@ -257,7 +305,6 @@ async def ask_question(request: QuestionRequest):
             return AnswerResponse(
                 answer=answer.strip(),
                 sources=sources,
-                chunk_ids=chunk_ids,
                 response_time_ms=elapsed_ms,
             )
 
@@ -305,7 +352,6 @@ async def search_chunks(request: QuestionRequest):
         "chunks": [
             {
                 "content": doc.page_content,
-                "chunk_id": doc.metadata.get("chunk_id", ""),
                 "length": len(doc.page_content),
             }
             for doc in docs

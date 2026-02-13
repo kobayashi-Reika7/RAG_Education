@@ -87,12 +87,12 @@ def demo_onsen_rag_json():
 
 def demo_simple_rag():
     """
-    SimpleRAGのデモ
+    SimpleRAGのデモ（レガシー）
 
     テキストデータからRAGシステムを構築し、質問に回答する例。
     温泉に関するサンプルデータを使用。
     """
-    from src.simple_rag import SimpleRAG
+    from _legacy.simple_rag import SimpleRAG
 
     print("=" * 60)
     print("📚 SimpleRAG デモ")
@@ -162,7 +162,7 @@ def demo_hybrid_search():
     セマンティック検索とキーワード検索を組み合わせた
     ハイブリッド検索の精度を確認する例。
     """
-    from src.hybrid_search_rag import HybridSearchRAG
+    from _legacy.hybrid_search_rag import HybridSearchRAG
 
     print("\n" + "=" * 60)
     print("🔀 HybridSearchRAG デモ")
@@ -199,7 +199,7 @@ def demo_reranking():
 
     初期検索→Re-ranking→回答生成の流れを確認する例。
     """
-    from src.reranking_rag import ReRankingRAG
+    from _legacy.reranking_rag import ReRankingRAG
 
     print("\n" + "=" * 60)
     print("🏆 ReRankingRAG デモ")
