@@ -21,6 +21,7 @@ serviceAccountKey.json
 chroma_db/
 chroma_pdf_db/
 chroma_corporate_db/
+chroma_onsen_db/
 *.faiss
 
 # IDE

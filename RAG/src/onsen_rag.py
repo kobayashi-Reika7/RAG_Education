@@ -17,6 +17,13 @@ RAG教材としてのポイント：
 
 import os
 import json
+import hashlib
+
+# HuggingFaceモデルのリモート確認をスキップ（キャッシュ済みなら高速起動）
+# ※ インポートよりも前に設定しないと効果がない
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
 from dotenv import load_dotenv
 from langchain_community.vectorstores import Chroma
 from src.text_splitter_utils import (
@@ -56,6 +63,13 @@ DEFAULT_JSON_CHUNK_PATHS = [
 
 # テキストファイルは全て JSON チャンクに変換済みのため空
 DEFAULT_TXT_PATHS = []
+
+# ChromaDB永続化先（ディスクに保存して起動時再構築を回避）
+CHROMA_PERSIST_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "chroma_onsen_db"
+)
+# データハッシュファイル（データ変更を検出して再構築するかの判定に使用）
+CHROMA_HASH_FILE = os.path.join(CHROMA_PERSIST_DIR, "_data_hash.txt")
 
 
 # 温泉地名 → chunk_idプレフィックスの対応表
@@ -130,15 +144,20 @@ class OnsenRAG:
         self.initial_k = initial_k
         self.final_k = final_k
 
-        # 日本語対応Embeddingモデル
+        # 日本語対応Embeddingモデル（local_files_only で HuggingFace HTTP チェックを完全スキップ）
         self.embeddings = HuggingFaceEmbeddings(
-            model_name="intfloat/multilingual-e5-base"
+            model_name="intfloat/multilingual-e5-base",
+            model_kwargs={"local_files_only": True},
         )
 
         # CrossEncoderモデル（Re-ranking用）
         # Bi-Encoderより低速だが、クエリと文書のペアを直接比較するため高精度
+        # local_files_only=True でリモート確認をスキップし起動を高速化
         print("[INIT] CrossEncoder loading...")
-        self.cross_encoder = CrossEncoder(self.DEFAULT_CROSS_ENCODER)
+        self.cross_encoder = CrossEncoder(
+            self.DEFAULT_CROSS_ENCODER,
+            local_files_only=True,
+        )
         print(f"  CrossEncoder: {self.DEFAULT_CROSS_ENCODER}")
 
         # ベクトルストア（セマンティック検索用）
@@ -167,18 +186,15 @@ class OnsenRAG:
 
         if google_key and not google_key.startswith("your_"):
             try:
-                import concurrent.futures
                 from langchain_google_genai import ChatGoogleGenerativeAI
                 llm = ChatGoogleGenerativeAI(
                     model="gemini-2.0-flash",
                     temperature=0,
                     google_api_key=google_key,
-                    max_retries=1,
+                    max_retries=2,
                 )
-                # 接続テスト（タイムアウト10秒でクォータ切れを早期検出）
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    future = pool.submit(llm.invoke, "test")
-                    future.result(timeout=10)
+                # 接続テストを廃止（起動を10秒以上高速化）
+                # APIキーの検証は初回クエリ時に行われる
                 print("  LLM: Gemini (gemini-2.0-flash)")
                 return llm
             except Exception as e:
@@ -341,11 +357,24 @@ class OnsenRAG:
         # BM25キーワード検索用にドキュメントを保持
         self.documents = documents
 
-        self.vectorstore = Chroma.from_documents(
-            documents=documents,
-            embedding=self.embeddings
-        )
+        # ChromaDB永続化対応
+        data_hash = self._compute_data_hash(documents)
+        cached = self._load_cached_vectorstore(data_hash)
 
+        if cached:
+            self.vectorstore = cached
+            print(f"[CACHE HIT] ChromaDB loaded from disk")
+        else:
+            self.vectorstore = Chroma.from_documents(
+                documents=documents,
+                embedding=self.embeddings,
+                persist_directory=CHROMA_PERSIST_DIR,
+            )
+            self._save_data_hash(data_hash)
+            print(f"[OK] ChromaDB saved to disk")
+
+        # BM25キャッシュ構築
+        self._build_bm25_cache()
         print(f"[OK] Vector DB saved (hybrid search ready)")
 
     def load_from_data_folder(
@@ -433,11 +462,93 @@ class OnsenRAG:
         # BM25キーワード検索用にドキュメントを保持
         self.documents = all_documents
 
-        self.vectorstore = Chroma.from_documents(
-            documents=all_documents,
-            embedding=self.embeddings,
-        )
-        print(f"[OK] Total {len(all_documents)} chunks loaded into Vector DB (hybrid search ready)")
+        # --- ChromaDB永続化（起動高速化の核心） ---
+        # データのハッシュ値を計算し、変更がなければディスクから読み込む
+        data_hash = self._compute_data_hash(all_documents)
+        cached = self._load_cached_vectorstore(data_hash)
+
+        if cached:
+            self.vectorstore = cached
+            print(f"[CACHE HIT] ChromaDB loaded from disk ({len(all_documents)} chunks)")
+        else:
+            # データが変更されたか初回 → 新規構築して永続化
+            print(f"[BUILD] ChromaDB constructing ({len(all_documents)} chunks)...")
+            self.vectorstore = Chroma.from_documents(
+                documents=all_documents,
+                embedding=self.embeddings,
+                persist_directory=CHROMA_PERSIST_DIR,
+            )
+            self._save_data_hash(data_hash)
+            print(f"[OK] ChromaDB saved to {CHROMA_PERSIST_DIR}")
+
+        # --- BM25キャッシュ（クエリ毎の再構築を回避） ---
+        self._build_bm25_cache()
+
+        print(f"[OK] Total {len(all_documents)} chunks ready (hybrid search)")
+
+    def _compute_data_hash(self, documents: list[Document]) -> str:
+        """データのハッシュ値を計算（変更検出用）"""
+        content = "".join(doc.page_content[:50] for doc in documents)
+        content += str(len(documents))
+        return hashlib.md5(content.encode("utf-8")).hexdigest()
+
+    def _load_cached_vectorstore(self, data_hash: str):
+        """永続化されたChromaDBが有効ならロードして返す。無効ならNone"""
+        if not os.path.exists(CHROMA_PERSIST_DIR):
+            return None
+        if not os.path.exists(CHROMA_HASH_FILE):
+            return None
+        with open(CHROMA_HASH_FILE, "r") as f:
+            stored_hash = f.read().strip()
+        if stored_hash != data_hash:
+            print("[CACHE MISS] Data changed, rebuilding ChromaDB...")
+            return None
+        try:
+            vs = Chroma(
+                persist_directory=CHROMA_PERSIST_DIR,
+                embedding_function=self.embeddings,
+            )
+            return vs
+        except Exception as e:
+            print(f"[CACHE ERROR] {e}, rebuilding...")
+            return None
+
+    def _save_data_hash(self, data_hash: str):
+        """データハッシュをファイルに保存"""
+        os.makedirs(CHROMA_PERSIST_DIR, exist_ok=True)
+        with open(CHROMA_HASH_FILE, "w") as f:
+            f.write(data_hash)
+
+    def _build_bm25_cache(self):
+        """
+        BM25 Retrieverを事前構築してキャッシュする。
+        クエリ毎の再構築（数秒のオーバーヘッド）を回避。
+
+        温泉地別にもキャッシュし、フィルタリング時に即座に使えるようにする。
+        """
+        if not self.documents:
+            self._bm25_all = None
+            self._bm25_by_location = {}
+            return
+
+        # 全文書のBM25
+        self._bm25_all = BM25Retriever.from_documents(self.documents)
+        self._bm25_all.k = self.initial_k
+
+        # 温泉地別のBM25
+        self._bm25_by_location = {}
+        for loc_key in list(LOCATION_KEYWORDS.keys()) + ["onsen"]:
+            loc_docs = [
+                doc for doc in self.documents
+                if doc.metadata.get("location") == loc_key
+            ]
+            if loc_docs:
+                retriever = BM25Retriever.from_documents(loc_docs)
+                retriever.k = self.initial_k
+                self._bm25_by_location[loc_key] = retriever
+
+        print(f"[BM25] Cached: all={len(self.documents)} docs, "
+              f"locations={list(self._bm25_by_location.keys())}")
 
     def _detect_location(self, question: str) -> str | None:
         """
@@ -738,19 +849,20 @@ kusatsu_015:3
         )
         semantic_docs = vector_retriever.invoke(question)
 
-        # --- BM25キーワード検索（単語一致度） ---
-        bm25_target_docs = self.documents
-        if location:
-            bm25_target_docs = [
-                doc for doc in self.documents
-                if doc.metadata.get("location") in (location, "onsen")
-            ]
-
+        # --- BM25キーワード検索（キャッシュ済みRetrieverを使用） ---
         bm25_docs = []
-        if bm25_target_docs:
-            bm25_retriever = BM25Retriever.from_documents(bm25_target_docs)
-            bm25_retriever.k = search_k
-            bm25_docs = bm25_retriever.invoke(question)
+        if location and hasattr(self, "_bm25_by_location"):
+            # 温泉地別のキャッシュ済みBM25を使用（クエリ毎の再構築を回避）
+            loc_retriever = self._bm25_by_location.get(location)
+            if loc_retriever:
+                bm25_docs = loc_retriever.invoke(question)
+            # 温泉基礎知識のBM25も追加
+            onsen_retriever = self._bm25_by_location.get("onsen")
+            if onsen_retriever:
+                bm25_docs.extend(onsen_retriever.invoke(question))
+        elif hasattr(self, "_bm25_all") and self._bm25_all:
+            # フィルタなし：全文書キャッシュ済みBM25を使用
+            bm25_docs = self._bm25_all.invoke(question)
 
         # --- RRF（Reciprocal Rank Fusion）で統合 ---
         RRF_K = 60
@@ -787,9 +899,20 @@ kusatsu_015:3
         # ========================================
         # ステップ2: LLM候補抽出（上位5件）
         # ========================================
-        llm_candidates = self._llm_extract_candidates(
-            question, scored_docs, top_k=self.final_k + 2
-        )
+        # 候補が少ない場合（≤5件）はLLM呼び出しをスキップして高速化
+        # LLM APIコールは数秒かかるため、候補が少なければ不要
+        if len(scored_docs) > self.final_k + 2:
+            llm_candidates = self._llm_extract_candidates(
+                question, scored_docs, top_k=self.final_k + 2
+            )
+        else:
+            # CrossEncoderスコアのみで続行（LLMスコア=0）
+            llm_candidates = [
+                (doc, ce_score, 0.0)
+                for doc, ce_score in scored_docs
+            ]
+            print(f"[LLM_EXTRACT] 候補{len(scored_docs)}件 ≤ "
+                  f"{self.final_k + 2}件 → LLM評価スキップ（高速化）")
 
         # ========================================
         # ステップ3: 最終選択（スコア統合）
