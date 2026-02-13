@@ -18,6 +18,8 @@ RAG教材としてのポイント：
 import os
 import json
 import hashlib
+import time
+from collections import OrderedDict
 
 # HuggingFaceモデルのリモート確認をスキップ（キャッシュ済みなら高速起動）
 # ※ インポートよりも前に設定しないと効果がない
@@ -101,9 +103,10 @@ class OnsenRAG:
         print(result["result"])
     """
 
-    # CrossEncoderモデル名（軽量で高速なモデル）
-    # クエリと文書のペアを直接比較し、関連度を高精度に計算する
-    DEFAULT_CROSS_ENCODER = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    # CrossEncoderモデル名（多言語対応・日本語Re-ranking高精度）
+    # mMARCO（14言語対応MS MARCO）で学習済み。英語専用モデルより日本語精度が大幅向上
+    # 旧: cross-encoder/ms-marco-MiniLM-L-6-v2（英語専用）
+    DEFAULT_CROSS_ENCODER = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
 
     def __init__(
         self,
@@ -166,61 +169,15 @@ class OnsenRAG:
         # 全ドキュメントリスト（BM25キーワード検索用に保持）
         self.documents = []
 
-        # LLMの初期化（Gemini優先 → Groq → OpenAI）
-        self.llm = self._init_llm()
+        # クエリキャッシュ（同一質問の重複LLM呼び出しを回避）
+        # maxsize件まで保持し、TTL秒経過で自動無効化
+        self._query_cache: OrderedDict = OrderedDict()
+        self._cache_maxsize = 128
+        self._cache_ttl = 300  # 5分
 
-    def _init_llm(self):
-        """
-        LLMを初期化する。
-        Google API キーがあれば Gemini（無料枠あり・高性能）を使用し、
-        なければ Groq → OpenAI の順にフォールバックする。
-
-        Geminiの利点:
-        - 無料枠あり（1分あたり15リクエスト）
-        - 日本語性能が高い
-        - gemini-2.0-flash は高速かつ高精度
-        """
-        google_key = os.getenv("GOOGLE_API_KEY", "")
-        groq_key = os.getenv("GROQ_API_KEY", "")
-        openai_key = os.getenv("OPENAI_API_KEY", "")
-
-        if google_key and not google_key.startswith("your_"):
-            try:
-                from langchain_google_genai import ChatGoogleGenerativeAI
-                llm = ChatGoogleGenerativeAI(
-                    model="gemini-2.0-flash",
-                    temperature=0,
-                    google_api_key=google_key,
-                    max_retries=2,
-                )
-                # 接続テストを廃止（起動を10秒以上高速化）
-                # APIキーの検証は初回クエリ時に行われる
-                print("  LLM: Gemini (gemini-2.0-flash)")
-                return llm
-            except Exception as e:
-                safe_msg = str(e)[:120]
-                print(f"  [WARN] Gemini unavailable (fallback): {safe_msg}")
-        if groq_key and not groq_key.startswith("gsk_your"):
-            from langchain_groq import ChatGroq
-            print("  LLM: Groq (llama-3.3-70b-versatile) を使用")
-            return ChatGroq(
-                model="llama-3.3-70b-versatile",
-                temperature=0,
-                groq_api_key=groq_key
-            )
-        elif openai_key and not openai_key.startswith("sk-your"):
-            from langchain_openai import OpenAI
-            print("  LLM: OpenAI を使用")
-            return OpenAI(
-                temperature=0,
-                openai_api_key=openai_key
-            )
-        else:
-            raise ValueError(
-                "LLM APIキーが未設定です。\n"
-                ".envファイルに GOOGLE_API_KEY, GROQ_API_KEY, "
-                "または OPENAI_API_KEY を設定してください。"
-            )
+        # LLMの初期化（共通ファクトリ経由: Gemini → Groq → OpenAI）
+        from src.llm_factory import create_llm
+        self.llm = create_llm(temperature=0)
 
     def load_data(self, data_path: str = None) -> None:
         """
@@ -746,6 +703,11 @@ kusatsu_015:3
 
         return results
 
+    # 信頼度閾値: CrossEncoderスコアがこの値未満の候補は除外
+    # mMARCOモデルは0〜1のスコアを返す（旧モデルは-11〜+11程度）
+    # 0.01未満は「まったく関連なし」と判断
+    CONFIDENCE_THRESHOLD = 0.01
+
     def _final_selection(
         self,
         candidates: list[tuple[Document, float, float]],
@@ -759,10 +721,9 @@ kusatsu_015:3
         スコア統合の計算式：
           final_score = ce_weight * normalize(CE_score) + llm_weight * normalize(LLM_score)
 
-        なぜ統合するのか：
-        - CrossEncoder: 文書レベルの汎用的な関連度（固有名詞や文体の一致に強い）
-        - LLM: 質問の意図を理解した上での関連度（回答に使える情報かを判断）
-        - 両方のスコアを統合することで、最も適切な文書を選定できる
+        信頼度フィルタ:
+          CrossEncoderスコアが CONFIDENCE_THRESHOLD 未満の候補は除外。
+          全候補が閾値以下の場合は空リストを返し、queryで「該当情報なし」となる。
 
         Args:
             candidates: (文書, CrossEncoderスコア, LLMスコア)のリスト
@@ -776,15 +737,28 @@ kusatsu_015:3
         if not candidates:
             return []
 
+        # --- 信頼度フィルタ: 閾値未満の候補を除外 ---
+        confident = [
+            (doc, ce, llm) for doc, ce, llm in candidates
+            if ce >= self.CONFIDENCE_THRESHOLD
+        ]
+        if not confident:
+            print(f"[FINAL] 全候補のCEスコアが閾値({self.CONFIDENCE_THRESHOLD})未満 → 該当情報なし")
+            return []
+
+        if len(confident) < len(candidates):
+            print(f"[FINAL] 信頼度フィルタ: {len(candidates)}件 → {len(confident)}件 "
+                  f"(閾値={self.CONFIDENCE_THRESHOLD})")
+
         # CrossEncoderスコアを0〜1に正規化
-        ce_scores = [ce for _, ce, _ in candidates]
+        ce_scores = [ce for _, ce, _ in confident]
         ce_min, ce_max = min(ce_scores), max(ce_scores)
         ce_range = ce_max - ce_min if ce_max != ce_min else 1.0
 
         # LLMスコアを0〜1に正規化（元は0〜10）
         # 統合スコアを計算
         final_scored = []
-        for doc, ce_score, llm_score in candidates:
+        for doc, ce_score, llm_score in confident:
             ce_norm = (ce_score - ce_min) / ce_range
             llm_norm = llm_score / 10.0
             final_score = ce_weight * ce_norm + llm_weight * llm_norm
@@ -948,6 +922,33 @@ kusatsu_015:3
 - chunk_id_2
 """
 
+    def _cache_key(self, question: str, k: int) -> str:
+        """クエリキャッシュのキーを生成"""
+        return hashlib.md5(f"{question}::{k}".encode("utf-8")).hexdigest()
+
+    def _get_from_cache(self, key: str) -> dict | None:
+        """キャッシュからクエリ結果を取得（TTL切れは自動削除）"""
+        if key not in self._query_cache:
+            return None
+        entry = self._query_cache[key]
+        if time.time() - entry["timestamp"] > self._cache_ttl:
+            del self._query_cache[key]
+            return None
+        # LRU: 使用されたエントリを末尾に移動
+        self._query_cache.move_to_end(key)
+        print(f"[CACHE HIT] クエリキャッシュヒット（TTL残: "
+              f"{self._cache_ttl - (time.time() - entry['timestamp']):.0f}秒）")
+        return entry["result"]
+
+    def _put_to_cache(self, key: str, result: dict):
+        """クエリ結果をキャッシュに格納（maxsize超過時はLRU削除）"""
+        if len(self._query_cache) >= self._cache_maxsize:
+            self._query_cache.popitem(last=False)  # 最古のエントリを削除
+        self._query_cache[key] = {
+            "result": result,
+            "timestamp": time.time(),
+        }
+
     def query(self, question: str, k: int = 3) -> dict:
         """
         温泉に関する質問に対してRAGで回答を生成
@@ -967,6 +968,12 @@ kusatsu_015:3
             raise ValueError(
                 "データが未読み込みです。先にload_data()を実行してください。"
             )
+
+        # --- クエリキャッシュ確認 ---
+        cache_key = self._cache_key(question, k)
+        cached = self._get_from_cache(cache_key)
+        if cached is not None:
+            return cached
 
         # ハイブリッド検索（セマンティック + BM25キーワード + 温泉地フィルタ）
         docs = self._hybrid_search(question, k=k)
@@ -995,11 +1002,16 @@ kusatsu_015:3
         response = chain.invoke({"context": context, "question": question})
         answer = response.content if hasattr(response, "content") else str(response)
 
-        return {
+        result = {
             "result": answer.strip(),
             "source_documents": docs,
             "chunk_ids": chunk_ids,
         }
+
+        # --- キャッシュに格納 ---
+        self._put_to_cache(cache_key, result)
+
+        return result
 
     def search_chunks(self, question: str, k: int = 3) -> list:
         """

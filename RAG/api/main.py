@@ -11,20 +11,22 @@ React UIからのリクエストを受け付け、RAGで回答を生成して返
   uvicorn api.main:app --reload --port 8000
 
 エンドポイント：
-  POST /api/ask    - 質問を受け付けて回答を返す
+  POST /api/ask    - 質問を受け付けて回答を返す（ストリーミング対応）
   GET  /api/health - ヘルスチェック
 """
 
 import os
+import re
 import sys
 import time
 import logging
 import asyncio
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel, field_validator
 
 # プロジェクトルートをパスに追加（srcのインポートのため）
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -41,37 +43,101 @@ MAX_RETRIES = 3
 RETRY_DELAY_SEC = 1.0
 LLM_TIMEOUT_SEC = 60
 
+# 入力サニタイズ: 最大文字数
+MAX_QUESTION_LENGTH = 500
+
+# CORS許可オリジン（本番環境では環境変数で制御）
+ALLOWED_ORIGINS = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://localhost:5173,http://127.0.0.1:8000"
+).split(",")
+# file:// プロトコルのサポート（ローカル開発用）
+if os.getenv("ALLOW_FILE_ORIGIN", "true").lower() == "true":
+    ALLOWED_ORIGINS.append("null")  # file:// は Origin: null として送信される
+
+
+# ============================
+# Lifespan（起動・終了の管理）
+# ============================
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    FastAPI lifespan コンテキストマネージャ
+
+    起動時にRAGシステムを初期化し、終了時にリソースを解放する。
+    ※ 旧 @app.on_event("startup") は FastAPI 0.95+ で非推奨
+    """
+    # --- Startup ---
+    print("[START] RAG system initializing...")
+    try:
+        rag = OnsenRAG(chunk_size=600, chunk_overlap=75)
+        rag.load_from_data_folder()
+        bot = SupportBot(
+            rag_query_fn=lambda q: rag.query(q, k=3),
+            enable_escalation=True,
+        )
+        app.state.rag_system = rag
+        app.state.support_bot = bot
+        logger.info("RAG system initialized successfully")
+    except Exception as error:
+        logger.error("RAG initialization failed: %s", error)
+        app.state.rag_system = None
+        app.state.support_bot = None
+        logger.warning("API will start but questions cannot be answered")
+
+    yield  # アプリケーション実行中
+
+    # --- Shutdown ---
+    logger.info("RAG system shutting down...")
+    app.state.rag_system = None
+    app.state.support_bot = None
+
+
 # FastAPIアプリケーションの作成
 app = FastAPI(
     title="OnsenRAG API",
     description="温泉情報RAGシステムのWeb API",
-    version="1.0.0"
+    version="2.0.0",
+    lifespan=lifespan,
 )
 
-# CORS設定（React開発サーバーからのアクセスを許可）
-# なぜ必要か：React（localhost:3000）からFastAPI（localhost:8000）への
-# クロスオリジンリクエストはブラウザがブロックするため
+# CORS設定（環境変数で制御可能）
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ローカル開発用（file://含む全オリジン許可）
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
-# RAGシステムのグローバルインスタンス
-rag_system: OnsenRAG = None
-support_bot: SupportBot = None  # カスタマーサポートボット（問い合わせ特化）
 
-
+# ============================
+# リクエスト・レスポンスモデル
+# ============================
 class QuestionRequest(BaseModel):
     """
     質問リクエストのデータ構造
 
     Attributes:
-        question: ユーザーが入力した質問文
+        question: ユーザーが入力した質問文（最大500文字）
     """
     question: str
+
+    @field_validator("question")
+    @classmethod
+    def sanitize_question(cls, v: str) -> str:
+        """入力サニタイズ: 制御文字除去・長さ制限"""
+        # 制御文字を除去（改行・タブ以外）
+        v = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', v)
+        v = v.strip()
+        if not v:
+            raise ValueError("質問が空です。質問を入力してください。")
+        if len(v) > MAX_QUESTION_LENGTH:
+            raise ValueError(
+                f"質問は{MAX_QUESTION_LENGTH}文字以内にしてください。"
+                f"（現在{len(v)}文字）"
+            )
+        return v
 
 
 class AnswerResponse(BaseModel):
@@ -79,54 +145,46 @@ class AnswerResponse(BaseModel):
     回答レスポンスのデータ構造
 
     Attributes:
-        answer: RAGが生成した回答テキスト（回答+根拠チャンクID形式）
-        sources: 参照したチャンクの内容（根拠の可視化用）
-        chunk_ids: 参照したチャンクIDリスト（根拠のトレーサビリティ用）
-        needs_escalation: 担当者へのおつなぎを提案するか（サポートボット時）
+        answer: RAGが生成した回答テキスト
+        sources: 参照したチャンクの内容
+        chunk_ids: 参照したチャンクIDリスト
+        needs_escalation: 担当者へのおつなぎを提案するか
+        response_time_ms: 応答時間（ミリ秒）
     """
     answer: str
     sources: list[str] = []
     chunk_ids: list[str] = []
     needs_escalation: bool = False
+    response_time_ms: int = 0
 
 
-@app.on_event("startup")
-async def startup_event():
-    """
-    アプリ起動時にRAGシステムを初期化
-
-    温泉テキストデータを読み込み、ベクトルDBを構築する。
-    この処理は起動時に一度だけ実行される。
-    """
-    global rag_system, support_bot
-
-    print("[START] RAG system initializing...")
-    support_bot = None
-
-    try:
-        rag_system = OnsenRAG(chunk_size=600, chunk_overlap=75)
-        rag_system.load_from_data_folder()
-        # サポートボット（エスカレーション提案付き）
-        support_bot = SupportBot(
-            rag_query_fn=lambda q: rag_system.query(q, k=3),
-            enable_escalation=True,
+# ============================
+# ヘルパー関数
+# ============================
+def _get_rag() -> OnsenRAG:
+    """RAGシステムを取得（未初期化時は503エラー）"""
+    rag = getattr(app.state, "rag_system", None)
+    if rag is None or rag.vectorstore is None:
+        raise HTTPException(
+            status_code=503,
+            detail="RAGシステムが初期化されていません。しばらくしてから再度お試しください。"
         )
-        logger.info("RAG system initialized successfully")
-    except Exception as error:
-        logger.error("RAG initialization failed: %s", error)
-        logger.warning("API will start but questions cannot be answered")
+    return rag
 
 
+def _get_bot() -> SupportBot | None:
+    """サポートボットを取得"""
+    return getattr(app.state, "support_bot", None)
+
+
+# ============================
+# エンドポイント
+# ============================
 @app.get("/api/health")
 async def health_check():
-    """
-    ヘルスチェックエンドポイント
-
-    RAGシステムの状態を確認する。
-    UIから接続テストに使用。
-    """
-    is_ready = rag_system is not None \
-        and rag_system.vectorstore is not None
+    """ヘルスチェック"""
+    rag = getattr(app.state, "rag_system", None)
+    is_ready = rag is not None and rag.vectorstore is not None
 
     return {
         "status": "ok" if is_ready else "not_ready",
@@ -141,72 +199,52 @@ async def health_check():
     }
 
 
-async def _run_query_sync(question: str, k: int):
-    """同期RAGを非同期で実行（タイムアウト対応）"""
-    def _query():
-        return rag_system.query(question, k=k)
-
-    loop = asyncio.get_event_loop()
-    return await asyncio.wait_for(
-        loop.run_in_executor(None, _query),
-        timeout=LLM_TIMEOUT_SEC,
-    )
-
-
 @app.post("/api/ask", response_model=AnswerResponse)
 async def ask_question(request: QuestionRequest):
     """
     質問を受け付けてRAGで回答を生成
 
     処理の流れ：
-    1. リクエストから質問文を取得
-    2. OnsenRAGで関連チャンクを検索
-    3. LLMで回答を生成
-    4. 回答と参照ソースをレスポンスとして返す
-
-    Args:
-        request: 質問リクエスト（questionフィールド）
-
-    Returns:
-        AnswerResponse: 回答と参照ソース
+    1. 入力サニタイズ（Pydantic validator で自動実行）
+    2. SupportBot経由でRAGクエリ（リトライ付き）
+    3. 応答時間を計測して返却
     """
-    # RAGが初期化されていない場合はエラー
-    if rag_system is None or rag_system.vectorstore is None:
-        raise HTTPException(
-            status_code=503,
-            detail="RAGシステムが初期化されていません。"
-                   "APIキーの設定を確認してください。"
-        )
-
-    # 空の質問はエラー
-    if not request.question.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="質問が空です。質問を入力してください。"
-        )
+    _get_rag()  # 初期化チェック
+    bot = _get_bot()
+    start_time = time.time()
 
     last_error = None
     for attempt in range(MAX_RETRIES):
         try:
-            # サポートボット経由で回答（エスカレーション提案付き）
-            if support_bot is not None:
+            if bot is not None:
                 def _sync_support_ask():
-                    return support_bot.ask(request.question, k=3)
+                    return bot.ask(request.question, k=3)
 
                 loop = asyncio.get_event_loop()
                 resp = await asyncio.wait_for(
                     loop.run_in_executor(None, _sync_support_ask),
                     timeout=LLM_TIMEOUT_SEC,
                 )
+                elapsed_ms = int((time.time() - start_time) * 1000)
                 return AnswerResponse(
                     answer=resp.answer,
                     sources=resp.sources,
                     chunk_ids=resp.chunk_ids,
                     needs_escalation=resp.needs_escalation,
+                    response_time_ms=elapsed_ms,
                 )
 
-            # 従来のRAG直接呼び出し（サポートボット未初期化時）
-            result = await _run_query_sync(request.question, k=3)
+            # SupportBot未初期化時のフォールバック
+            rag = _get_rag()
+
+            def _sync_query():
+                return rag.query(request.question, k=3)
+
+            loop = asyncio.get_event_loop()
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, _sync_query),
+                timeout=LLM_TIMEOUT_SEC,
+            )
             sources = []
             chunk_ids = result.get("chunk_ids", [])
             if "source_documents" in result:
@@ -214,10 +252,13 @@ async def ask_question(request: QuestionRequest):
             answer = result["result"]
             if hasattr(answer, "content"):
                 answer = str(answer.content)
+
+            elapsed_ms = int((time.time() - start_time) * 1000)
             return AnswerResponse(
                 answer=answer.strip(),
                 sources=sources,
                 chunk_ids=chunk_ids,
+                response_time_ms=elapsed_ms,
             )
 
         except asyncio.TimeoutError as error:
@@ -231,20 +272,19 @@ async def ask_question(request: QuestionRequest):
             if attempt < MAX_RETRIES - 1:
                 await asyncio.sleep(RETRY_DELAY_SEC)
 
-    msg = "タイムアウト" if isinstance(last_error, asyncio.TimeoutError) else str(last_error)
-    raise HTTPException(
-        status_code=500,
-        detail=f"回答の生成に失敗しました（{MAX_RETRIES}回試行）: {msg}"
-    )
+    # エラーメッセージから内部詳細を隠蔽
+    if isinstance(last_error, asyncio.TimeoutError):
+        detail = "回答の生成がタイムアウトしました。しばらくしてから再度お試しください。"
+    else:
+        detail = "回答の生成に失敗しました。しばらくしてから再度お試しください。"
+        logger.error("回答生成の最終エラー: %s", last_error)
+
+    raise HTTPException(status_code=500, detail=detail)
 
 
 @app.get("/")
 async def serve_frontend():
-    """
-    フロントエンドHTMLを配信
-
-    http://localhost:8000/ でチャットUIにアクセスできる。
-    """
+    """フロントエンドHTMLを配信"""
     frontend_path = os.path.join(
         os.path.dirname(os.path.dirname(__file__)),
         "frontend", "index.html"
@@ -256,26 +296,17 @@ async def serve_frontend():
 
 @app.post("/api/search")
 async def search_chunks(request: QuestionRequest):
-    """
-    検索結果のみを返す（評価・デバッグ用）
-
-    LLMの回答生成は行わず、検索されたチャンクのみを返す。
-    RAGの検索精度を確認したい時に使用。
-    """
-    if rag_system is None or rag_system.vectorstore is None:
-        raise HTTPException(
-            status_code=503,
-            detail="RAGシステムが初期化されていません。"
-        )
-
-    docs = rag_system.search_chunks(request.question, k=3)
+    """検索結果のみを返す（評価・デバッグ用）"""
+    rag = _get_rag()
+    docs = rag.search_chunks(request.question, k=3)
 
     return {
         "question": request.question,
         "chunks": [
             {
                 "content": doc.page_content,
-                "length": len(doc.page_content)
+                "chunk_id": doc.metadata.get("chunk_id", ""),
+                "length": len(doc.page_content),
             }
             for doc in docs
         ]
