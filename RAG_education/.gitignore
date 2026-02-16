@@ -1,0 +1,29 @@
+# Environment & secrets
+.env
+.env.*
+
+# Service account keys (GCP)
+*-firebase-adminsdk-*.json
+rageducation-*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ChromaDB (ローカルベクトルDB)
+chroma_db/
+
+# Node
+node_modules/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
