@@ -1,0 +1,1 @@
+{"statusCode": 200, "headers": {"content-length": "56", "content-type": "application/json"}, "multiValueHeaders": {}, "body": "{\"status\":\"ok\",\"chromadb_ready\":true,\"chunks_loaded\":14}", "isBase64Encoded": false}

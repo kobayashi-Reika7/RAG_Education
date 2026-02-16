@@ -1,31 +1,25 @@
 """
-ベクトルDB構築スクリプト
-========================
-チャンクJSONを読み込み、Embedding生成 → ChromaDB に保存する。
+ベクトルDB構築スクリプト（Gemini Embedding版）
+================================================
+Gemini text-embedding-004 を使用してベクトルDBを構築する。
 
 実行:
   cd RAG_education/backend
-  python build_vectordb.py
-
-依存:
-  pip install chromadb sentence-transformers langchain langchain-community
+  python -m scripts.build_vectordb
 """
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
-from langchain_community.embeddings import HuggingFaceEmbeddings
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 
-# パス設定
-BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-CHROMA_DIR = BASE_DIR / "chroma_db"
-
-# Embeddingモデル（多言語対応・日本語に強い）
-EMBEDDING_MODEL = "intfloat/multilingual-e5-base"
+from src.config import DATA_DIR, CHROMA_DIR, EMBEDDING_MODEL, CHROMA_COLLECTION
 
 
 def load_chunks(data_dir: Path = DATA_DIR) -> list[dict]:
@@ -40,19 +34,30 @@ def load_chunks(data_dir: Path = DATA_DIR) -> list[dict]:
 
 
 def chunks_to_documents(chunks: list[dict]) -> list[Document]:
-    """チャンクJSONをLangChain Documentに変換する。"""
+    """チャンクJSONをLangChain Documentに変換する。
+    section と tags をテキストに結合して検索品質を向上させる。
+    """
     docs = []
     for chunk in chunks:
         meta = chunk.get("metadata", {})
+        section = chunk.get("section", "")
+        tags = meta.get("tags", [])
+        content = chunk["content"]
+
+        enriched_text = f"{section}。{content}"
+        if tags:
+            enriched_text += f" キーワード: {', '.join(tags)}"
+
         doc = Document(
-            page_content=chunk["content"],
+            page_content=enriched_text,
             metadata={
                 "chunk_id": chunk["chunk_id"],
-                "section": chunk.get("section", ""),
+                "section": section,
                 "source": meta.get("source", ""),
                 "category": meta.get("category", ""),
                 "area": meta.get("area", ""),
-                "tags": ", ".join(meta.get("tags", [])),
+                "tags": ", ".join(tags),
+                "raw_content": content,
             },
         )
         docs.append(doc)
@@ -66,10 +71,9 @@ def build_vectordb(docs: list[Document], persist_dir: Path = CHROMA_DIR) -> Chro
         print(f"  既存DB削除: {persist_dir}")
 
     print(f"  Embeddingモデル: {EMBEDDING_MODEL}")
-    embeddings = HuggingFaceEmbeddings(
-        model_name=EMBEDDING_MODEL,
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model=EMBEDDING_MODEL,
+        google_api_key=os.getenv("GOOGLE_API_KEY"),
     )
 
     print(f"  {len(docs)} documents をベクトル化中...")
@@ -77,7 +81,7 @@ def build_vectordb(docs: list[Document], persist_dir: Path = CHROMA_DIR) -> Chro
         documents=docs,
         embedding=embeddings,
         persist_directory=str(persist_dir),
-        collection_name="rag_education",
+        collection_name=CHROMA_COLLECTION,
     )
 
     print(f"  ChromaDB保存完了: {persist_dir}")
@@ -92,7 +96,11 @@ def main():
         return
 
     print(f"\n[2/3] Document変換 ({len(chunks)} chunks)...")
+    print(f"  メタデータ結合: section + tags をテキストに結合")
     docs = chunks_to_documents(chunks)
+
+    print(f"\n  サンプル:")
+    print(f"  {docs[0].page_content[:120]}...")
 
     print(f"\n[3/3] ベクトルDB構築...")
     vectordb = build_vectordb(docs)

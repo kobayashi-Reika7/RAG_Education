@@ -1,64 +1,132 @@
-"""クイズ生成・判定エンジン"""
+"""クイズ生成・判定エンジン（○×形式 / バッチ対応）"""
 import time
 import uuid
 import random
+import re
 
-from src.rag_engine import _get_vectordb
-from src.llm_client import get_llm
+from src.rag_engine import get_all_docs
+from src.llm_client import get_llm, get_llm_long
+from src.config import load_prompt
 
 DIFFICULTY_MAP = {
-    "beginner": "初級（マニュアルに直接書かれている事実を問う簡単な問題）",
-    "intermediate": "中級（複数の情報を組み合わせて答える問題）",
-    "advanced": "上級（応用・考察を求める問題。「なぜ？」「どう思う？」）",
+    "beginner": "初級（参考資料に書かれている内容をそのまま判断するだけの超簡単な問題）",
+    "intermediate": "中級（参考資料の内容を理解していれば判断できる問題）",
+    "advanced": "上級（複数の知識を組み合わせて判断する問題）",
 }
 
-GENERATE_PROMPT = """あなたは教育用クイズの出題者です。
-以下の参考資料を元に、{difficulty}のクイズを1問だけ作成してください。
 
-## 参考資料
-{context}
-
-## 出力形式（必ずこの形式で）
-問題: （問題文）
-正解: （模範解答）
-ヒント: （ヒント）"""
-
-EVALUATE_PROMPT = """あなたは教育クイズの採点者です。
-以下の問題・模範解答・ユーザー回答を比較し、正誤を判定してください。
-難易度は{difficulty}です。
-
-## 問題
-{question}
-
-## 模範解答
-{expected_answer}
-
-## ユーザーの回答
-{user_answer}
-
-## 出力形式（必ずこの形式で）
-判定: （正解 or 不正解 or 部分正解）
-スコア: （0.0〜1.0の数値）
-フィードバック: （短い一言）
-解説: （詳しい解説）"""
-
-
-def generate(difficulty: str = "beginner") -> dict:
-    """クイズを1問生成する。"""
+def generate_batch(count: int = 5, difficulty: str = "beginner") -> list[dict]:
+    """○×クイズをcount問まとめて1回のLLM呼出しで生成する。"""
     start = time.time()
 
-    db = _get_vectordb()
-    all_docs = db.get()
+    all_docs = get_all_docs()
     total = len(all_docs["ids"])
 
-    indices = random.sample(range(total), min(3, total))
+    indices = random.sample(range(total), min(total, max(count, 3)))
     selected_docs = [all_docs["documents"][i] for i in indices]
     selected_metas = [all_docs["metadatas"][i] for i in indices]
-    selected_ids = [all_docs["ids"][i] for i in indices]
 
     context = "\n\n".join(selected_docs)
     diff_label = DIFFICULTY_MAP.get(difficulty, DIFFICULTY_MAP["beginner"])
-    prompt = GENERATE_PROMPT.format(context=context, difficulty=diff_label)
+
+    prompt_template = load_prompt("quiz_batch_generate")
+    prompt = prompt_template.format(
+        context=context, difficulty=diff_label, count=count,
+    )
+
+    llm = get_llm_long()
+    response = llm.invoke(prompt)
+    text = response.content
+
+    questions = _parse_batch(text, count)
+    elapsed = int((time.time() - start) * 1000)
+    chunk_ids = [m.get("chunk_id", "") for m in selected_metas]
+
+    results = []
+    for q in questions:
+        q["quiz_id"] = f"q_{uuid.uuid4().hex[:8]}"
+        q["difficulty"] = difficulty
+        q["format"] = "○×"
+        q["hint"] = None
+        q["source_chunk_ids"] = chunk_ids
+        q["response_time_ms"] = elapsed
+        results.append(q)
+
+    return results
+
+
+def _parse_batch(text: str, expected_count: int) -> list[dict]:
+    """バッチ出力をパースして複数問題に分割する。"""
+    questions = []
+    current_q = ""
+    current_a = ""
+    current_e = ""
+
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+
+        q_match = re.match(r"^Q\d+[:：]\s*(.+)", line)
+        a_match = re.match(r"^A\d+[:：]\s*(.+)", line)
+        e_match = re.match(r"^E\d+[:：]\s*(.+)", line)
+
+        if q_match:
+            if current_q and current_a:
+                questions.append(_build_question(current_q, current_a, current_e))
+            current_q = q_match.group(1).strip()
+            current_a = ""
+            current_e = ""
+        elif a_match:
+            current_a = a_match.group(1).strip()
+        elif e_match:
+            current_e = e_match.group(1).strip()
+
+    if current_q and current_a:
+        questions.append(_build_question(current_q, current_a, current_e))
+
+    return questions[:expected_count]
+
+
+def _build_question(question: str, answer_raw: str, explanation: str) -> dict:
+    """1問分の辞書を作成する。"""
+    if "○" in answer_raw:
+        expected = "○"
+    elif "×" in answer_raw:
+        expected = "×"
+    else:
+        expected = answer_raw.strip()
+
+    return {
+        "question": question,
+        "expected_answer": expected,
+        "explanation": explanation,
+    }
+
+
+def generate(difficulty: str = "beginner", exclude_chunk_ids: list[str] | None = None) -> dict:
+    """○×クイズを1問生成する（後方互換用）。"""
+    start = time.time()
+
+    all_docs = get_all_docs()
+    total = len(all_docs["ids"])
+
+    exclude = set(exclude_chunk_ids or [])
+    candidates = [i for i in range(total)
+                  if all_docs["metadatas"][i].get("chunk_id", "") not in exclude]
+
+    if len(candidates) < 2:
+        candidates = list(range(total))
+
+    indices = random.sample(candidates, min(2, len(candidates)))
+    selected_docs = [all_docs["documents"][i] for i in indices]
+    selected_metas = [all_docs["metadatas"][i] for i in indices]
+
+    context = "\n\n".join(selected_docs)
+    diff_label = DIFFICULTY_MAP.get(difficulty, DIFFICULTY_MAP["beginner"])
+
+    prompt_template = load_prompt("quiz_generate")
+    prompt = prompt_template.format(context=context, difficulty=diff_label)
 
     llm = get_llm()
     response = llm.invoke(prompt)
@@ -66,31 +134,38 @@ def generate(difficulty: str = "beginner") -> dict:
 
     question = ""
     expected_answer = ""
-    hint = ""
+    explanation = ""
     for line in text.split("\n"):
         line = line.strip()
         if line.startswith("問題:") or line.startswith("問題："):
             question = line.split(":", 1)[-1].split("：", 1)[-1].strip()
         elif line.startswith("正解:") or line.startswith("正解："):
-            expected_answer = line.split(":", 1)[-1].split("：", 1)[-1].strip()
-        elif line.startswith("ヒント:") or line.startswith("ヒント："):
-            hint = line.split(":", 1)[-1].split("：", 1)[-1].strip()
+            raw = line.split(":", 1)[-1].split("：", 1)[-1].strip()
+            if "○" in raw:
+                expected_answer = "○"
+            elif "×" in raw:
+                expected_answer = "×"
+            else:
+                expected_answer = raw
+        elif line.startswith("解説:") or line.startswith("解説："):
+            explanation = line.split(":", 1)[-1].split("：", 1)[-1].strip()
 
     if not question:
         question = text.split("\n")[0]
 
     quiz_id = f"q_{uuid.uuid4().hex[:8]}"
     elapsed = int((time.time() - start) * 1000)
-
     chunk_ids = [m.get("chunk_id", "") for m in selected_metas]
 
     return {
         "quiz_id": quiz_id,
         "difficulty": difficulty,
+        "format": "○×",
         "question": question,
-        "hint": hint or None,
-        "source_chunk_ids": chunk_ids,
         "expected_answer": expected_answer,
+        "explanation": explanation,
+        "hint": None,
+        "source_chunk_ids": chunk_ids,
         "response_time_ms": elapsed,
     }
 
@@ -103,49 +178,16 @@ def evaluate(
     difficulty: str = "beginner",
     source_chunk_ids: list[str] | None = None,
 ) -> dict:
-    """ユーザー回答を判定する。"""
-    start = time.time()
-
-    diff_label = DIFFICULTY_MAP.get(difficulty, DIFFICULTY_MAP["beginner"])
-    prompt = EVALUATE_PROMPT.format(
-        difficulty=diff_label,
-        question=question,
-        expected_answer=expected_answer,
-        user_answer=user_answer,
-    )
-
-    llm = get_llm()
-    response = llm.invoke(prompt)
-    text = response.content
-
-    is_correct = False
-    score = 0.0
-    feedback = ""
-    explanation = ""
-
-    for line in text.split("\n"):
-        line = line.strip()
-        if line.startswith("判定:") or line.startswith("判定："):
-            val = line.split(":", 1)[-1].split("：", 1)[-1].strip()
-            is_correct = "正解" in val and "不正解" not in val
-        elif line.startswith("スコア:") or line.startswith("スコア："):
-            try:
-                score = float(line.split(":", 1)[-1].split("：", 1)[-1].strip())
-            except ValueError:
-                score = 1.0 if is_correct else 0.0
-        elif line.startswith("フィードバック:") or line.startswith("フィードバック："):
-            feedback = line.split(":", 1)[-1].split("：", 1)[-1].strip()
-        elif line.startswith("解説:") or line.startswith("解説："):
-            explanation = line.split(":", 1)[-1].split("：", 1)[-1].strip()
-
-    elapsed = int((time.time() - start) * 1000)
+    """○×の正誤判定（LLM不要、文字列比較のみ）。"""
+    normalized_user = "○" if "○" in user_answer or "まる" in user_answer.lower() else "×" if "×" in user_answer or "ばつ" in user_answer.lower() else user_answer.strip()
+    is_correct = normalized_user == expected_answer
 
     return {
         "quiz_id": quiz_id,
         "is_correct": is_correct,
-        "score": score,
-        "feedback": feedback or ("正解です！" if is_correct else "不正解です。"),
-        "explanation": explanation,
+        "score": 1.0 if is_correct else 0.0,
+        "feedback": "正解です！すごい！" if is_correct else f"残念、正解は {expected_answer} です。",
+        "explanation": "",
         "source_section": "",
-        "response_time_ms": elapsed,
+        "response_time_ms": 0,
     }

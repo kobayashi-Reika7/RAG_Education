@@ -20,6 +20,14 @@ chroma_db/
 node_modules/
 dist/
 
+# Deploy artifacts & secrets
+deploy/build/
+deploy/lambda.zip
+deploy/lambda-env.json
+
+# Generated embeddings (large file)
+backend/data/embeddings.json
+
 # OS
 .DS_Store
 Thumbs.db
