@@ -4,9 +4,9 @@ import uuid
 import random
 import re
 
-from src.rag_engine import get_all_docs
 from src.llm_client import get_llm, get_llm_long
 from src.config import load_prompt
+from src.bedrock_kb import get_contents_for_quiz
 
 DIFFICULTY_MAP = {
     "beginner": "初級（参考資料に書かれている内容をそのまま判断するだけの超簡単な問題）",
@@ -19,14 +19,11 @@ def generate_batch(count: int = 5, difficulty: str = "beginner") -> list[dict]:
     """○×クイズをcount問まとめて1回のLLM呼出しで生成する。"""
     start = time.time()
 
-    all_docs = get_all_docs()
-    total = len(all_docs["ids"])
+    contents = get_contents_for_quiz(count=max(count, 3))
+    if not contents:
+        raise ValueError("ナレッジベースからコンテンツを取得できませんでした")
 
-    indices = random.sample(range(total), min(total, max(count, 3)))
-    selected_docs = [all_docs["documents"][i] for i in indices]
-    selected_metas = [all_docs["metadatas"][i] for i in indices]
-
-    context = "\n\n".join(selected_docs)
+    context = "\n\n".join(contents)
     diff_label = DIFFICULTY_MAP.get(difficulty, DIFFICULTY_MAP["beginner"])
 
     prompt_template = load_prompt("quiz_batch_generate")
@@ -40,7 +37,6 @@ def generate_batch(count: int = 5, difficulty: str = "beginner") -> list[dict]:
 
     questions = _parse_batch(text, count)
     elapsed = int((time.time() - start) * 1000)
-    chunk_ids = [m.get("chunk_id", "") for m in selected_metas]
 
     results = []
     for q in questions:
@@ -48,7 +44,7 @@ def generate_batch(count: int = 5, difficulty: str = "beginner") -> list[dict]:
         q["difficulty"] = difficulty
         q["format"] = "○×"
         q["hint"] = None
-        q["source_chunk_ids"] = chunk_ids
+        q["source_chunk_ids"] = []
         q["response_time_ms"] = elapsed
         results.append(q)
 
@@ -108,21 +104,11 @@ def generate(difficulty: str = "beginner", exclude_chunk_ids: list[str] | None =
     """○×クイズを1問生成する（後方互換用）。"""
     start = time.time()
 
-    all_docs = get_all_docs()
-    total = len(all_docs["ids"])
+    contents = get_contents_for_quiz(count=2)
+    if not contents:
+        raise ValueError("ナレッジベースからコンテンツを取得できませんでした")
 
-    exclude = set(exclude_chunk_ids or [])
-    candidates = [i for i in range(total)
-                  if all_docs["metadatas"][i].get("chunk_id", "") not in exclude]
-
-    if len(candidates) < 2:
-        candidates = list(range(total))
-
-    indices = random.sample(candidates, min(2, len(candidates)))
-    selected_docs = [all_docs["documents"][i] for i in indices]
-    selected_metas = [all_docs["metadatas"][i] for i in indices]
-
-    context = "\n\n".join(selected_docs)
+    context = "\n\n".join(contents)
     diff_label = DIFFICULTY_MAP.get(difficulty, DIFFICULTY_MAP["beginner"])
 
     prompt_template = load_prompt("quiz_generate")
@@ -155,7 +141,6 @@ def generate(difficulty: str = "beginner", exclude_chunk_ids: list[str] | None =
 
     quiz_id = f"q_{uuid.uuid4().hex[:8]}"
     elapsed = int((time.time() - start) * 1000)
-    chunk_ids = [m.get("chunk_id", "") for m in selected_metas]
 
     return {
         "quiz_id": quiz_id,
@@ -165,7 +150,7 @@ def generate(difficulty: str = "beginner", exclude_chunk_ids: list[str] | None =
         "expected_answer": expected_answer,
         "explanation": explanation,
         "hint": None,
-        "source_chunk_ids": chunk_ids,
+        "source_chunk_ids": [],
         "response_time_ms": elapsed,
     }
 

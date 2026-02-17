@@ -4,9 +4,9 @@ import uuid
 import random
 import re
 
-from src.rag_engine import get_all_docs
 from src.llm_client import get_llm
 from src.config import load_prompt
+from src.bedrock_kb import get_contents_for_quiz
 
 DIFFICULTY_MAP = {
     "beginner": "初級（参考資料に書かれている用語や単語を選ぶだけの超簡単な問題）",
@@ -17,20 +17,19 @@ DIFFICULTY_MAP = {
 
 def generate_practice(count: int = 5, difficulty: str = "beginner") -> list[dict]:
     """4択問題をcount問生成する。"""
-    all_docs = get_all_docs()
-    total = len(all_docs["ids"])
+    all_contents = get_contents_for_quiz(count=max(count, 3))
+    if not all_contents:
+        raise ValueError("ナレッジベースからコンテンツを取得できませんでした")
 
     problems = []
     prompt_template = load_prompt("practice_generate")
     diff_label = DIFFICULTY_MAP.get(difficulty, DIFFICULTY_MAP["beginner"])
 
-    for _ in range(count):
+    for i in range(count):
         start = time.time()
 
-        indices = random.sample(range(total), min(2, total))
-        selected_docs = [all_docs["documents"][i] for i in indices]
-
-        context = "\n\n".join(selected_docs)
+        selected = random.sample(all_contents, min(2, len(all_contents)))
+        context = "\n\n".join(selected)
         prompt = prompt_template.format(context=context, difficulty=diff_label)
 
         llm = get_llm()
@@ -49,15 +48,13 @@ def generate_practice(count: int = 5, difficulty: str = "beginner") -> list[dict
 
 def generate_practice_single(difficulty: str = "beginner") -> dict:
     """4択問題を1問生成する。"""
-    all_docs = get_all_docs()
-    total = len(all_docs["ids"])
-
     start = time.time()
 
-    indices = random.sample(range(total), min(2, total))
-    selected_docs = [all_docs["documents"][i] for i in indices]
+    contents = get_contents_for_quiz(count=2)
+    if not contents:
+        raise ValueError("ナレッジベースからコンテンツを取得できませんでした")
 
-    context = "\n\n".join(selected_docs)
+    context = "\n\n".join(contents)
     prompt_template = load_prompt("practice_generate")
     diff_label = DIFFICULTY_MAP.get(difficulty, DIFFICULTY_MAP["beginner"])
     prompt = prompt_template.format(context=context, difficulty=diff_label)

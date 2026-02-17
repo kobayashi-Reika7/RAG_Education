@@ -1,4 +1,6 @@
-"""RAG教育クイズアプリ - FastAPI バックエンド"""
+"""RAG教育クイズアプリ - FastAPI バックエンド（Bedrock KB 統合版）"""
+import logging
+
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -12,9 +14,11 @@ from src.models import (
     PracticeGenerateRequest,
     PracticeAnswerRequest,
 )
-from src import rag_engine, quiz_engine, practice_engine, ingest
+from src import quiz_engine, practice_engine, s3_storage, bedrock_kb
 from src.auth import optional_uid
 from src import history
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="RAG Education API", version="1.0.0")
 
@@ -30,26 +34,37 @@ app.add_middleware(
 
 @app.get("/api/health")
 def health():
-    status = ingest.get_data_status()
+    try:
+        s3_info = s3_storage.get_status()
+        file_count = s3_info.get("file_count", 0)
+    except Exception:
+        file_count = 0
     return {
         "status": "ok",
-        "chromadb_ready": True,
-        "chunks_loaded": status["total_chunks"],
+        "bedrock_kb_ready": bool(bedrock_kb.BEDROCK_KB_ID),
+        "s3_files": file_count,
     }
 
 
-@app.post("/api/ask")
-def ask(req: AskRequest, uid: str | None = Depends(optional_uid)):
+@app.post("/api/ask/bedrock")
+def ask_bedrock(req: AskRequest, uid: str | None = Depends(optional_uid)):
+    """Bedrock Knowledge Bases を使って RAG 回答を生成する。"""
     try:
-        return rag_engine.ask(req.question, req.history)
+        return bedrock_kb.ask(req.question)
+    except ValueError as e:
+        logger.error("Bedrock KB config error: %s", e)
+        raise HTTPException(status_code=400, detail={"error": str(e), "code": "BEDROCK_CONFIG_ERROR"})
     except Exception as e:
-        raise HTTPException(status_code=500, detail={"error": str(e), "code": "LLM_ERROR"})
+        logger.error("Bedrock KB error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": str(e), "code": "BEDROCK_ERROR"})
 
 
 @app.post("/api/quiz/generate")
 def quiz_generate(req: QuizGenerateRequest, uid: str | None = Depends(optional_uid)):
     try:
         return quiz_engine.generate(req.difficulty, exclude_chunk_ids=req.exclude_chunk_ids)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"error": str(e), "code": "BEDROCK_KB_ERROR"})
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "code": "LLM_ERROR"})
 
@@ -59,6 +74,8 @@ def quiz_generate_batch(req: QuizBatchRequest, uid: str | None = Depends(optiona
     """5問まとめて1回のLLM呼出しで生成する（高速）。"""
     try:
         return quiz_engine.generate_batch(req.count, req.difficulty)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"error": str(e), "code": "BEDROCK_KB_ERROR"})
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "code": "LLM_ERROR"})
 
@@ -87,6 +104,8 @@ def practice_generate(req: PracticeGenerateRequest, uid: str | None = Depends(op
         if req.count == 1:
             return practice_engine.generate_practice_single(req.difficulty)
         return practice_engine.generate_practice(req.count, req.difficulty)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"error": str(e), "code": "BEDROCK_KB_ERROR"})
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "code": "LLM_ERROR"})
 
@@ -122,16 +141,18 @@ ALLOWED_EXTENSIONS = {".pdf", ".md", ".markdown", ".txt", ".text", ".csv"}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
 
-@app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...), uid: str | None = Depends(optional_uid)):
-    """ファイルをアップロードしてデータに追加する。"""
+# --- S3 データソース (Bedrock Knowledge Bases) ---
+
+@app.post("/api/s3/upload")
+async def s3_upload_file(file: UploadFile = File(...), uid: str | None = Depends(optional_uid)):
+    """ファイルを S3 データソースバケットにアップロードする。"""
     from pathlib import Path
 
     ext = Path(file.filename or "").suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail={"error": f"未対応のファイル形式: {ext}。PDF/MD/TXTに対応しています。", "code": "INVALID_FILE"},
+            detail={"error": f"未対応のファイル形式: {ext}", "code": "INVALID_FILE"},
         )
 
     contents = await file.read()
@@ -142,27 +163,32 @@ async def upload_file(file: UploadFile = File(...), uid: str | None = Depends(op
         )
 
     try:
-        result = ingest.ingest_file(contents, file.filename or "unknown")
+        result = s3_storage.upload_file(contents, file.filename or "unknown", file.content_type or "")
         return result
     except ValueError as e:
-        raise HTTPException(status_code=400, detail={"error": str(e), "code": "INGEST_ERROR"})
+        raise HTTPException(status_code=400, detail={"error": str(e), "code": "S3_CONFIG_ERROR"})
     except Exception as e:
-        raise HTTPException(status_code=500, detail={"error": str(e), "code": "INGEST_ERROR"})
+        raise HTTPException(status_code=500, detail={"error": str(e), "code": "S3_ERROR"})
 
 
-@app.get("/api/data/status")
-def data_status(uid: str | None = Depends(optional_uid)):
-    """現在のデータ状態を返す。"""
-    return ingest.get_data_status()
+@app.get("/api/s3/status")
+def s3_status(uid: str | None = Depends(optional_uid)):
+    """S3 バケットの状態を返す。"""
+    try:
+        return s3_storage.get_status()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"error": str(e), "code": "S3_CONFIG_ERROR"})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "code": "S3_ERROR"})
 
 
-@app.delete("/api/data/source/{source_name}")
-def delete_source(source_name: str, uid: str | None = Depends(optional_uid)):
-    """指定ソースのデータを削除する。"""
-    removed = ingest.delete_source(source_name)
-    if removed == 0:
-        raise HTTPException(status_code=404, detail={"error": "指定ソースが見つかりません", "code": "NOT_FOUND"})
-    return {"removed_chunks": removed, "status": ingest.get_data_status()}
+@app.delete("/api/s3/file/{file_key:path}")
+def s3_delete_file(file_key: str, uid: str | None = Depends(optional_uid)):
+    """S3 バケットからファイルを削除する。"""
+    try:
+        return s3_storage.delete_file(file_key)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "code": "S3_ERROR"})
 
 
 @app.get("/api/me/stats")

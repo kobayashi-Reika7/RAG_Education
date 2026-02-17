@@ -1,55 +1,60 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { api, type DataStatusResponse } from '../lib/api';
+import { api, type S3StatusResponse } from '../lib/api';
 
 type UploadPhase = 'idle' | 'uploading' | 'done' | 'error';
 
 const ACCEPT = '.pdf,.md,.markdown,.txt,.text,.csv';
 
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
+
 export default function DataTab() {
-  const [status, setStatus] = useState<DataStatusResponse | null>(null);
+  const [s3Status, setS3Status] = useState<S3StatusResponse | null>(null);
   const [phase, setPhase] = useState<UploadPhase>('idle');
-  const [uploadResult, setUploadResult] = useState<string>('');
+  const [result, setResult] = useState<string>('');
   const [error, setError] = useState('');
   const [dragOver, setDragOver] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const loadStatus = useCallback(async () => {
+  const loadS3Status = useCallback(async () => {
     try {
-      const s = await api.getDataStatus();
-      setStatus(s);
-    } catch {
-      // ignore
+      const s = await api.s3Status();
+      setS3Status(s);
+      setError('');
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'S3ステータスの取得に失敗');
     }
   }, []);
 
   useEffect(() => {
-    loadStatus();
-  }, [loadStatus]);
+    loadS3Status();
+  }, [loadS3Status]);
 
   const handleUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
-
     setPhase('uploading');
     setError('');
-    setUploadResult('');
-
+    setResult('');
     const results: string[] = [];
     let hasError = false;
-
     for (const file of Array.from(files)) {
       try {
-        const res = await api.uploadFile(file);
-        results.push(`${res.filename}: ${res.chunks_created} チャンク作成`);
+        const res = await api.s3Upload(file);
+        results.push(`${res.filename} -> ${res.uri} (${formatBytes(res.size)})`);
       } catch (e: unknown) {
         hasError = true;
         results.push(`${file.name}: ${e instanceof Error ? e.message : 'エラー'}`);
       }
     }
-
-    setUploadResult(results.join('\n'));
+    setResult(results.join('\n'));
     setPhase(hasError ? 'error' : 'done');
-    await loadStatus();
+    await loadS3Status();
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -58,12 +63,12 @@ export default function DataTab() {
     handleUpload(e.dataTransfer.files);
   };
 
-  const handleDelete = async (sourceName: string) => {
-    if (!confirm(`「${sourceName}」のデータを削除しますか？`)) return;
-    setDeleting(sourceName);
+  const handleDelete = async (fileKey: string) => {
+    if (!confirm(`「${fileKey}」を S3 から削除しますか？`)) return;
+    setDeleting(fileKey);
     try {
-      await api.deleteSource(sourceName);
-      await loadStatus();
+      await api.s3Delete(fileKey);
+      await loadS3Status();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '削除に失敗しました');
     } finally {
@@ -76,13 +81,13 @@ export default function DataTab() {
       <div className="max-w-2xl mx-auto space-y-8">
         {/* Header */}
         <div className="text-center">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-100 to-purple-100 mb-4">
-            <svg className="w-8 h-8 text-violet-500" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m6.75 12l-3-3m0 0l-3 3m3-3v6m-1.5-15H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-orange-100 to-amber-100 mb-4">
+            <svg className="w-8 h-8 text-orange-500" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15a4.5 4.5 0 004.5 4.5H18a3.75 3.75 0 001.332-7.257 3 3 0 00-3.758-3.848 5.25 5.25 0 00-10.233 2.33A4.502 4.502 0 002.25 15z" />
             </svg>
           </div>
           <h2 className="text-xl font-bold text-gray-900">データ管理</h2>
-          <p className="text-sm text-gray-400 mt-1">PDF・Markdown・テキストファイルをアップロードして学習データを追加</p>
+          <p className="text-sm text-gray-400 mt-1">S3 バケットにファイルをアップロードして Bedrock KB のデータソースを管理</p>
         </div>
 
         {/* Error */}
@@ -100,6 +105,21 @@ export default function DataTab() {
           </div>
         )}
 
+        {/* S3 Bucket Info */}
+        {s3Status && (
+          <div className="flex items-center gap-3 bg-orange-50 border border-orange-200 rounded-xl px-4 py-3">
+            <div className="w-8 h-8 rounded-lg bg-orange-100 flex items-center justify-center shrink-0">
+              <svg className="w-4 h-4 text-orange-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15a4.5 4.5 0 004.5 4.5H18a3.75 3.75 0 001.332-7.257 3 3 0 00-3.758-3.848 5.25 5.25 0 00-10.233 2.33A4.502 4.502 0 002.25 15z" />
+              </svg>
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-[13px] font-semibold text-orange-800 truncate">s3://{s3Status.bucket}</p>
+              <p className="text-[11px] text-orange-500">{s3Status.region} / {s3Status.file_count} ファイル / {formatBytes(s3Status.total_size)}</p>
+            </div>
+          </div>
+        )}
+
         {/* Upload Zone */}
         <div
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -108,10 +128,10 @@ export default function DataTab() {
           onClick={() => fileRef.current?.click()}
           className={`relative rounded-2xl border-2 border-dashed p-10 text-center cursor-pointer transition-all duration-200 ${
             dragOver
-              ? 'border-violet-400 bg-violet-50/50 scale-[1.01]'
+              ? 'border-orange-400 bg-orange-50/50 scale-[1.01]'
               : phase === 'uploading'
               ? 'border-gray-300 bg-gray-50 pointer-events-none'
-              : 'border-gray-300 bg-white hover:border-violet-300 hover:bg-violet-50/30'
+              : 'border-gray-300 bg-white hover:border-orange-300 hover:bg-orange-50/30'
           }`}
         >
           <input
@@ -125,28 +145,28 @@ export default function DataTab() {
 
           {phase === 'uploading' ? (
             <div className="space-y-3">
-              <div className="spinner mx-auto" style={{ borderTopColor: '#8b5cf6' }} />
-              <p className="text-sm font-medium text-gray-500">アップロード中...</p>
-              <p className="text-xs text-gray-400">テキスト抽出 → チャンク分割 → Embedding生成</p>
+              <div className="spinner mx-auto" style={{ borderTopColor: '#ea580c' }} />
+              <p className="text-sm font-medium text-gray-500">S3 にアップロード中...</p>
+              <p className="text-xs text-gray-400">Bedrock Knowledge Bases のデータソースに送信</p>
             </div>
           ) : (
             <>
               <div className={`inline-flex items-center justify-center w-14 h-14 rounded-2xl mb-4 transition-all ${
-                dragOver ? 'bg-violet-200' : 'bg-gray-100'
+                dragOver ? 'bg-orange-200' : 'bg-gray-100'
               }`}>
-                <svg className={`w-7 h-7 ${dragOver ? 'text-violet-600' : 'text-gray-400'}`} fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                <svg className={`w-7 h-7 ${dragOver ? 'text-orange-600' : 'text-gray-400'}`} fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5V9.75m0 0l3 3m-3-3l-3 3M6.75 19.5a4.5 4.5 0 01-1.41-8.775 5.25 5.25 0 0110.233-2.33 3 3 0 013.758 3.848A3.752 3.752 0 0118 19.5H6.75z" />
                 </svg>
               </div>
               <p className="text-sm font-semibold text-gray-700">
-                ファイルをドラッグ＆ドロップ
+                S3 にファイルをアップロード
               </p>
               <p className="text-xs text-gray-400 mt-1">
-                またはクリックして選択（PDF / Markdown / テキスト、最大10MB）
+                ドラッグ＆ドロップ、またはクリックして選択（最大10MB）
               </p>
               <div className="flex justify-center gap-2 mt-4">
-                {['PDF', 'MD', 'TXT'].map((ext) => (
-                  <span key={ext} className="text-[10px] px-2.5 py-1 rounded-full bg-gray-100 text-gray-500 font-semibold">
+                {['CSV', 'PDF', 'TXT', 'MD'].map((ext) => (
+                  <span key={ext} className="text-[10px] px-2.5 py-1 rounded-full bg-orange-50 text-orange-500 font-semibold">
                     .{ext.toLowerCase()}
                   </span>
                 ))}
@@ -156,7 +176,7 @@ export default function DataTab() {
         </div>
 
         {/* Upload Result */}
-        {(phase === 'done' || phase === 'error') && uploadResult && (
+        {(phase === 'done' || phase === 'error') && result && (
           <div className={`rounded-2xl border p-5 ${
             phase === 'done' ? 'bg-emerald-50/50 border-emerald-200' : 'bg-amber-50/50 border-amber-200'
           }`}>
@@ -175,14 +195,14 @@ export default function DataTab() {
                 </div>
               )}
               <span className={`text-sm font-bold ${phase === 'done' ? 'text-emerald-700' : 'text-amber-700'}`}>
-                {phase === 'done' ? 'アップロード完了' : '一部エラーあり'}
+                {phase === 'done' ? 'S3 アップロード完了' : '一部エラーあり'}
               </span>
             </div>
-            {uploadResult.split('\n').map((line, i) => (
-              <p key={i} className="text-[13px] text-gray-700 leading-relaxed">{line}</p>
+            {result.split('\n').map((line, i) => (
+              <p key={i} className="text-[13px] text-gray-700 leading-relaxed break-all">{line}</p>
             ))}
             <button
-              onClick={() => { setPhase('idle'); setUploadResult(''); }}
+              onClick={() => { setPhase('idle'); setResult(''); }}
               className="mt-3 text-[12px] font-medium text-gray-400 hover:text-gray-600 transition-colors"
             >
               閉じる
@@ -190,47 +210,47 @@ export default function DataTab() {
           </div>
         )}
 
-        {/* Current Data Status */}
-        {status && (
+        {/* S3 File List */}
+        {s3Status && (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold text-gray-700">登録済みデータ</h3>
-              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-50 text-violet-600">
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
-                </svg>
-                <span className="text-[11px] font-semibold">{status.total_chunks} チャンク</span>
-              </div>
+              <h3 className="text-sm font-bold text-gray-700">S3 バケット内ファイル</h3>
+              <button
+                onClick={loadS3Status}
+                className="text-[11px] font-medium text-orange-500 hover:text-orange-700 transition-colors"
+              >
+                更新
+              </button>
             </div>
 
-            {status.sources.length === 0 ? (
+            {s3Status.files.length === 0 ? (
               <div className="text-center py-8 bg-gray-50 rounded-2xl border border-gray-100">
-                <p className="text-sm text-gray-400">データがありません</p>
-                <p className="text-xs text-gray-300 mt-1">ファイルをアップロードして始めましょう</p>
+                <p className="text-sm text-gray-400">ファイルがありません</p>
+                <p className="text-xs text-gray-300 mt-1">データソースにファイルをアップロードしましょう</p>
               </div>
             ) : (
               <div className="space-y-2">
-                {status.sources.map((src) => (
+                {s3Status.files.map((f) => (
                   <div
-                    key={src.name}
+                    key={f.key}
                     className="flex items-center gap-3 bg-white rounded-xl border border-gray-100 px-4 py-3 shadow-sm"
                   >
-                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-100 to-purple-100 flex items-center justify-center shrink-0">
-                      <svg className="w-4 h-4 text-violet-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-orange-100 to-amber-100 flex items-center justify-center shrink-0">
+                      <svg className="w-4 h-4 text-orange-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
                       </svg>
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-[13px] font-semibold text-gray-800 truncate">{src.name}</p>
-                      <p className="text-[11px] text-gray-400">{src.chunks} チャンク</p>
+                      <p className="text-[13px] font-semibold text-gray-800 truncate">{f.key}</p>
+                      <p className="text-[11px] text-gray-400">{formatBytes(f.size)}</p>
                     </div>
                     <button
-                      onClick={() => handleDelete(src.name)}
-                      disabled={deleting === src.name}
+                      onClick={() => handleDelete(f.key)}
+                      disabled={deleting === f.key}
                       className="p-2 rounded-lg text-gray-300 hover:text-rose-500 hover:bg-rose-50 transition-all disabled:opacity-50"
                       title="削除"
                     >
-                      {deleting === src.name ? (
+                      {deleting === f.key ? (
                         <div className="w-4 h-4 border-2 border-gray-300 border-t-transparent rounded-full animate-spin" />
                       ) : (
                         <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -246,20 +266,20 @@ export default function DataTab() {
         )}
 
         {/* Tips */}
-        <div className="bg-gradient-to-br from-violet-50 to-purple-50 rounded-2xl border border-violet-100 p-5">
+        <div className="bg-gradient-to-br from-orange-50 to-amber-50 rounded-2xl border border-orange-100 p-5">
           <div className="flex items-center gap-2 mb-3">
-            <div className="w-5 h-5 rounded-md bg-violet-100 flex items-center justify-center">
-              <svg className="w-3 h-3 text-violet-600" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <div className="w-5 h-5 rounded-md bg-orange-100 flex items-center justify-center">
+              <svg className="w-3 h-3 text-orange-600" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
               </svg>
             </div>
-            <span className="text-[11px] font-semibold text-violet-600 uppercase tracking-wider">使い方</span>
+            <span className="text-[11px] font-semibold text-orange-600 uppercase tracking-wider">S3 + Bedrock KB</span>
           </div>
-          <ul className="space-y-1.5 text-[12px] text-violet-800 leading-relaxed">
-            <li>アップロードしたファイルは自動でチャンクに分割され、ベクトルDBに登録されます</li>
-            <li>登録後すぐに「質問する」「クイズ」「問題演習」で利用可能になります</li>
-            <li>不要なデータはゴミ箱アイコンで削除できます</li>
-            <li>対応形式: PDF、Markdown(.md)、テキスト(.txt)、CSV</li>
+          <ul className="space-y-1.5 text-[12px] text-orange-800 leading-relaxed">
+            <li>S3 バケットは Bedrock Knowledge Bases のデータソースです</li>
+            <li>アップロード後、Bedrock KB 側で「同期」を実行するとチャンキング・ベクトル化が自動で行われます</li>
+            <li>リージョン: us-east-1（バージニア北部）</li>
+            <li>対応形式: CSV、PDF、TXT、Markdown など</li>
           </ul>
         </div>
       </div>

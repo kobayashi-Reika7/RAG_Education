@@ -11,25 +11,18 @@ DATA_DIR = BASE_DIR / "data"
 PROMPTS_DIR = BASE_DIR / "prompts"
 SCRIPTS_DIR = BASE_DIR / "scripts"
 
-_chroma_override = os.getenv("CHROMA_DIR_OVERRIDE")
-CHROMA_DIR = Path(_chroma_override) if _chroma_override else BASE_DIR / "chroma_db"
-
-# --- Embedding / VectorDB ---
-EMBEDDING_MODEL = "models/gemini-embedding-001"
-CHROMA_COLLECTION = "rag_education"
-
-# --- 検索パラメータ ---
-SCORE_THRESHOLD = 1.0
-SEARCH_TOP_K = 5
-SEARCH_RETURN_K = 3
-
 # --- サーバー ---
 PORT = int(os.getenv("PORT", "7000"))
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
-
-# --- AWS Lambda ---
 APP_ENV = os.getenv("APP_ENV", "local")
-CHROMA_S3_BUCKET = os.getenv("CHROMA_S3_BUCKET", "")
+
+# --- S3 データソース (Bedrock Knowledge Bases) ---
+S3_DATA_BUCKET = os.getenv("S3_DATA_BUCKET", "")
+S3_REGION = os.getenv("S3_REGION", "us-east-1")
+
+# --- Bedrock Knowledge Bases ---
+BEDROCK_KB_ID = os.getenv("BEDROCK_KB_ID", "")
+BEDROCK_MODEL_ARN = os.getenv("BEDROCK_MODEL_ARN", "")
 
 
 # --- プロンプトローダー ---

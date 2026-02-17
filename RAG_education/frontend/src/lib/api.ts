@@ -74,23 +74,6 @@ export interface HistoryItem {
   format?: string;
 }
 
-export interface UploadResponse {
-  filename: string;
-  text_length: number;
-  chunks_created: number;
-  total_chunks: number;
-}
-
-export interface DataSource {
-  name: string;
-  chunks: number;
-}
-
-export interface DataStatusResponse {
-  total_chunks: number;
-  sources: DataSource[];
-}
-
 export interface StatsResponse {
   total_quizzes: number;
   total_practices: number;
@@ -100,8 +83,30 @@ export interface StatsResponse {
   recent_history: HistoryItem[];
 }
 
+export interface S3UploadResponse {
+  filename: string;
+  bucket: string;
+  size: number;
+  uri: string;
+}
+
+export interface S3File {
+  key: string;
+  size: number;
+  last_modified: string;
+  uri: string;
+}
+
+export interface S3StatusResponse {
+  bucket: string;
+  region: string;
+  file_count: number;
+  total_size: number;
+  files: S3File[];
+}
+
 export const api = {
-  ask: (question: string) => post<AskResponse>('/ask', { question }),
+  askBedrock: (question: string) => post<AskResponse>('/ask/bedrock', { question }),
 
   generateQuiz: (difficulty: string, excludeChunkIds?: string[]) =>
     post<QuizResponse>('/quiz/generate', { difficulty, exclude_chunk_ids: excludeChunkIds || [] }),
@@ -144,41 +149,46 @@ export const api = {
     return res.json();
   },
 
-  uploadFile: async (file: File): Promise<UploadResponse> => {
+  health: () => fetch(`${BASE}/health`).then((r) => r.json()),
+
+  // --- S3 データソース (Bedrock Knowledge Bases) ---
+
+  s3Upload: async (file: File): Promise<S3UploadResponse> => {
     const headers = await getAuthHeaders();
     delete headers['Content-Type'];
     const formData = new FormData();
     formData.append('file', file);
-    const res = await fetch(`${BASE}/upload`, {
+    const res = await fetch(`${BASE}/s3/upload`, {
       method: 'POST',
       headers,
       body: formData,
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(err.detail?.error || err.detail || 'Upload Error');
+      throw new Error(err.detail?.error || err.detail || 'S3 Upload Error');
     }
     return res.json();
   },
 
-  getDataStatus: async (): Promise<DataStatusResponse> => {
+  s3Status: async (): Promise<S3StatusResponse> => {
     const headers = await getAuthHeaders();
-    const res = await fetch(`${BASE}/data/status`, { headers });
-    if (!res.ok) throw new Error('データ状態の取得に失敗しました');
+    const res = await fetch(`${BASE}/s3/status`, { headers });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail?.error || err.detail || 'S3 Status Error');
+    }
     return res.json();
   },
 
-  deleteSource: async (sourceName: string): Promise<void> => {
+  s3Delete: async (fileKey: string): Promise<void> => {
     const headers = await getAuthHeaders();
-    const res = await fetch(`${BASE}/data/source/${encodeURIComponent(sourceName)}`, {
+    const res = await fetch(`${BASE}/s3/file/${encodeURIComponent(fileKey)}`, {
       method: 'DELETE',
       headers,
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(err.detail?.error || err.detail || 'Delete Error');
+      throw new Error(err.detail?.error || err.detail || 'S3 Delete Error');
     }
   },
-
-  health: () => fetch(`${BASE}/health`).then((r) => r.json()),
 };
