@@ -1,14 +1,18 @@
-import { auth } from './firebase';
+import { fetchAuthSession } from 'aws-amplify/auth';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const BASE = `${API_BASE}/api`;
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  const user = auth.currentUser;
-  if (user) {
-    const token = await user.getIdToken();
-    headers['Authorization'] = `Bearer ${token}`;
+  try {
+    const session = await fetchAuthSession();
+    const token = session.tokens?.idToken?.toString();
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+  } catch {
+    // not authenticated
   }
   return headers;
 }
@@ -66,12 +70,33 @@ export interface PracticeResponse {
 export interface HistoryItem {
   id: string;
   type: 'quiz' | 'practice';
+  quiz_id?: string;
+  practice_id?: string;
   question: string;
   is_correct: boolean;
   score: number;
   timestamp: string;
   difficulty?: string;
   format?: string;
+  user_answer?: string;
+  expected_answer?: string;
+  selected?: string;
+  correct?: string;
+  choices?: { A?: string; B?: string; C?: string; D?: string };
+  explanation?: string;
+  feedback?: string;
+}
+
+export interface DifficultyStats {
+  total: number;
+  correct: number;
+  accuracy: number;
+}
+
+export interface DailyActivity {
+  date: string;
+  total: number;
+  correct: number;
 }
 
 export interface StatsResponse {
@@ -80,6 +105,11 @@ export interface StatsResponse {
   avg_score: number;
   streak_days: number;
   last_active: string | null;
+  quiz_accuracy: number;
+  practice_accuracy: number;
+  total_correct: number;
+  difficulty_stats: Record<string, DifficultyStats>;
+  daily_activity: DailyActivity[];
   recent_history: HistoryItem[];
 }
 
@@ -108,11 +138,11 @@ export interface S3StatusResponse {
 export const api = {
   askBedrock: (question: string) => post<AskResponse>('/ask/bedrock', { question }),
 
-  generateQuiz: (difficulty: string, excludeChunkIds?: string[]) =>
-    post<QuizResponse>('/quiz/generate', { difficulty, exclude_chunk_ids: excludeChunkIds || [] }),
+  generateQuiz: (difficulty: string, excludeChunkIds?: string[], pastQuestions?: string[]) =>
+    post<QuizResponse>('/quiz/generate', { difficulty, exclude_chunk_ids: excludeChunkIds || [], past_questions: pastQuestions || [] }),
 
-  generateQuizBatch: (difficulty: string, count: number = 5) =>
-    post<QuizResponse[]>('/quiz/generate-batch', { difficulty, count }),
+  generateQuizBatch: (difficulty: string, count: number = 5, pastQuestions?: string[]) =>
+    post<QuizResponse[]>('/quiz/generate-batch', { difficulty, count, past_questions: pastQuestions || [] }),
 
   evaluateQuiz: (params: {
     quiz_id: string;
@@ -122,8 +152,8 @@ export const api = {
     difficulty: string;
   }) => post<EvalResponse>('/quiz/evaluate', params),
 
-  generatePractice: (difficulty: string = 'beginner') =>
-    post<PracticeResponse>('/practice/generate', { count: 1, difficulty }),
+  generatePractice: (difficulty: string = 'beginner', pastQuestions?: string[]) =>
+    post<PracticeResponse>('/practice/generate', { count: 1, difficulty, past_questions: pastQuestions || [] }),
 
   saveQuizResult: (params: {
     quiz_id: string;
@@ -140,6 +170,8 @@ export const api = {
     selected: string;
     correct: string;
     difficulty: string;
+    choices?: { A: string; B: string; C: string; D: string };
+    explanation?: string;
   }) => post<{ status: string }>('/practice/answer', params),
 
   getStats: async (): Promise<StatsResponse> => {

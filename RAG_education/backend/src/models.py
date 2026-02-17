@@ -17,6 +17,7 @@ class AskRequest(BaseModel):
 class QuizGenerateRequest(BaseModel):
     difficulty: str = "beginner"
     exclude_chunk_ids: list[str] | None = None
+    past_questions: list[str] | None = None
 
     @field_validator("difficulty")
     @classmethod
@@ -29,6 +30,7 @@ class QuizGenerateRequest(BaseModel):
 class QuizBatchRequest(BaseModel):
     difficulty: str = "beginner"
     count: int = 5
+    past_questions: list[str] | None = None
 
     @field_validator("difficulty")
     @classmethod
@@ -64,6 +66,7 @@ class QuizEvaluateRequest(BaseModel):
 class PracticeGenerateRequest(BaseModel):
     count: int = 1
     difficulty: str = "beginner"
+    past_questions: list[str] | None = None
 
     @field_validator("count")
     @classmethod
@@ -86,6 +89,8 @@ class PracticeAnswerRequest(BaseModel):
     selected: str
     correct: str
     difficulty: str = "beginner"
+    choices: dict[str, str] | None = None
+    explanation: str | None = None
 
     @field_validator("selected")
     @classmethod
@@ -102,3 +107,27 @@ class QuizSaveResultRequest(BaseModel):
     user_answer: str
     is_correct: bool
     difficulty: str = "beginner"
+
+
+class ChunksPreviewRequest(BaseModel):
+    queries: list[str] | None = None
+    k: int = 10
+    max_items: int = 200
+
+    @field_validator("k")
+    @classmethod
+    def valid_k(cls, v):
+        if v < 1 or v > 50:
+            raise ValueError("k は 1〜50")
+        return v
+
+    @field_validator("max_items")
+    @classmethod
+    def valid_max_items(cls, v):
+        if v < 1 or v > 2000:
+            raise ValueError("max_items は 1〜2000")
+        return v
+
+
+class ChunksExportRequest(ChunksPreviewRequest):
+    filename: str | None = None

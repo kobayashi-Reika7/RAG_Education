@@ -13,7 +13,11 @@ function formatBytes(bytes: number): string {
   return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }
 
-export default function DataTab() {
+interface DataTabProps {
+  onFileCountChange?: (count: number) => void;
+}
+
+export default function DataTab({ onFileCountChange }: DataTabProps) {
   const [s3Status, setS3Status] = useState<S3StatusResponse | null>(null);
   const [phase, setPhase] = useState<UploadPhase>('idle');
   const [result, setResult] = useState<string>('');
@@ -26,11 +30,12 @@ export default function DataTab() {
     try {
       const s = await api.s3Status();
       setS3Status(s);
+      onFileCountChange?.(s.file_count);
       setError('');
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'S3ステータスの取得に失敗');
     }
-  }, []);
+  }, [onFileCountChange]);
 
   useEffect(() => {
     loadS3Status();
@@ -277,7 +282,7 @@ export default function DataTab() {
           </div>
           <ul className="space-y-1.5 text-[12px] text-orange-800 leading-relaxed">
             <li>S3 バケットは Bedrock Knowledge Bases のデータソースです</li>
-            <li>アップロード後、Bedrock KB 側で「同期」を実行するとチャンキング・ベクトル化が自動で行われます</li>
+            <li>アップロード・削除後、Bedrock KB の同期が自動実行されチャンキング・ベクトル化が行われます</li>
             <li>リージョン: us-east-1（バージニア北部）</li>
             <li>対応形式: CSV、PDF、TXT、Markdown など</li>
           </ul>

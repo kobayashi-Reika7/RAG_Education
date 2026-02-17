@@ -5,24 +5,30 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import '../lib/cognito';
 import {
-  onAuthStateChanged,
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
-  signInWithPopup,
-  GoogleAuthProvider,
-  signOut as fbSignOut,
-  updateProfile,
-  type User,
-} from 'firebase/auth';
-import { auth } from '../lib/firebase';
+  signIn as amplifySignIn,
+  signUp as amplifySignUp,
+  signOut as amplifySignOut,
+  confirmSignUp as amplifyConfirmSignUp,
+  getCurrentUser,
+  fetchAuthSession,
+  fetchUserAttributes,
+} from 'aws-amplify/auth';
+import { Hub } from 'aws-amplify/utils';
+
+export interface CognitoUser {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+}
 
 interface AuthContextValue {
-  user: User | null;
+  user: CognitoUser | null;
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
-  signUp: (email: string, password: string, displayName: string) => Promise<void>;
-  signInWithGoogle: () => Promise<void>;
+  signUp: (email: string, password: string, displayName: string) => Promise<'CONFIRM_SIGN_UP' | 'DONE'>;
+  confirmSignUp: (email: string, code: string) => Promise<void>;
   signOut: () => Promise<void>;
   getIdToken: () => Promise<string>;
 }
@@ -35,44 +41,92 @@ export function useAuth() {
   return ctx;
 }
 
+async function loadUser(): Promise<CognitoUser | null> {
+  try {
+    const { userId } = await getCurrentUser();
+    const attrs = await fetchUserAttributes();
+    return {
+      uid: userId,
+      email: attrs.email ?? null,
+      displayName: attrs.name ?? attrs.email ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<CognitoUser | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
+    loadUser().then((u) => {
       setUser(u);
       setLoading(false);
     });
+
+    const unsub = Hub.listen('auth', async ({ payload }) => {
+      switch (payload.event) {
+        case 'signedIn':
+          setUser(await loadUser());
+          break;
+        case 'signedOut':
+          setUser(null);
+          break;
+        case 'tokenRefresh':
+          setUser(await loadUser());
+          break;
+      }
+    });
+
     return unsub;
   }, []);
 
   const signIn = async (email: string, password: string) => {
-    await signInWithEmailAndPassword(auth, email, password);
+    await amplifySignIn({ username: email, password });
+    setUser(await loadUser());
   };
 
-  const signUp = async (email: string, password: string, displayName: string) => {
-    const cred = await createUserWithEmailAndPassword(auth, email, password);
-    await updateProfile(cred.user, { displayName });
+  const signUp = async (
+    email: string,
+    password: string,
+    displayName: string,
+  ): Promise<'CONFIRM_SIGN_UP' | 'DONE'> => {
+    const { nextStep } = await amplifySignUp({
+      username: email,
+      password,
+      options: {
+        userAttributes: {
+          email,
+          name: displayName,
+        },
+      },
+    });
+    if (nextStep.signUpStep === 'CONFIRM_SIGN_UP') {
+      return 'CONFIRM_SIGN_UP';
+    }
+    return 'DONE';
   };
 
-  const signInWithGoogle = async () => {
-    const provider = new GoogleAuthProvider();
-    await signInWithPopup(auth, provider);
+  const confirmSignUp = async (email: string, code: string) => {
+    await amplifyConfirmSignUp({ username: email, confirmationCode: code });
   };
 
   const signOut = async () => {
-    await fbSignOut(auth);
+    await amplifySignOut();
+    setUser(null);
   };
 
   const getIdToken = async (): Promise<string> => {
-    if (!auth.currentUser) throw new Error('Not authenticated');
-    return auth.currentUser.getIdToken();
+    const session = await fetchAuthSession();
+    const token = session.tokens?.idToken?.toString();
+    if (!token) throw new Error('Not authenticated');
+    return token;
   };
 
   return (
     <AuthContext.Provider
-      value={{ user, loading, signIn, signUp, signInWithGoogle, signOut, getIdToken }}
+      value={{ user, loading, signIn, signUp, confirmSignUp, signOut, getIdToken }}
     >
       {children}
     </AuthContext.Provider>

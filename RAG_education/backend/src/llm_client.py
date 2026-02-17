@@ -58,7 +58,7 @@ def _invoke_converse(prompt: str, max_tokens: int, temperature: float) -> _Conve
 
 class _BedrockLLM:
     """quiz_engine / practice_engine の llm.invoke(prompt) 互換ラッパー"""
-    def __init__(self, max_tokens: int = 256, temperature: float = 0.4):
+    def __init__(self, max_tokens: int, temperature: float):
         self._max_tokens = max_tokens
         self._temperature = temperature
 
@@ -70,17 +70,17 @@ _llm_fast = None
 _llm_long = None
 
 
-def get_llm(max_tokens: int = 256):
-    """高速LLMインスタンスを返す（出力トークン制限）。"""
+def get_llm(max_tokens: int = 300):
+    """単問生成用 LLM（問題文 + 解説を最短で出力）。"""
     global _llm_fast
     if _llm_fast is None:
-        _llm_fast = _BedrockLLM(max_tokens=max_tokens, temperature=0.4)
+        _llm_fast = _BedrockLLM(max_tokens=max_tokens, temperature=0.0)
     return _llm_fast
 
 
-def get_llm_long(max_tokens: int = 1024):
-    """長い出力用LLMインスタンス（バッチ生成用）。"""
+def get_llm_long(max_tokens: int = 1200):
+    """バッチ生成用 LLM（5問分の問題 + 解説を出力）。"""
     global _llm_long
     if _llm_long is None:
-        _llm_long = _BedrockLLM(max_tokens=max_tokens, temperature=0.5)
+        _llm_long = _BedrockLLM(max_tokens=max_tokens, temperature=0.0)
     return _llm_long

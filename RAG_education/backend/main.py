@@ -1,10 +1,13 @@
 """RAG教育クイズアプリ - FastAPI バックエンド（Bedrock KB 統合版）"""
+import json
 import logging
+import re
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.config import CORS_ORIGINS, PORT
+from src.config import CORS_ORIGINS, PORT, DATA_DIR
 from src.models import (
     AskRequest,
     QuizGenerateRequest,
@@ -13,6 +16,8 @@ from src.models import (
     QuizSaveResultRequest,
     PracticeGenerateRequest,
     PracticeAnswerRequest,
+    ChunksPreviewRequest,
+    ChunksExportRequest,
 )
 from src import quiz_engine, practice_engine, s3_storage, bedrock_kb
 from src.auth import optional_uid
@@ -62,7 +67,11 @@ def ask_bedrock(req: AskRequest, uid: str | None = Depends(optional_uid)):
 @app.post("/api/quiz/generate")
 def quiz_generate(req: QuizGenerateRequest, uid: str | None = Depends(optional_uid)):
     try:
-        return quiz_engine.generate(req.difficulty, exclude_chunk_ids=req.exclude_chunk_ids)
+        return quiz_engine.generate(
+            req.difficulty,
+            exclude_chunk_ids=req.exclude_chunk_ids,
+            past_questions=req.past_questions,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail={"error": str(e), "code": "BEDROCK_KB_ERROR"})
     except Exception as e:
@@ -73,7 +82,10 @@ def quiz_generate(req: QuizGenerateRequest, uid: str | None = Depends(optional_u
 def quiz_generate_batch(req: QuizBatchRequest, uid: str | None = Depends(optional_uid)):
     """5問まとめて1回のLLM呼出しで生成する（高速）。"""
     try:
-        return quiz_engine.generate_batch(req.count, req.difficulty)
+        return quiz_engine.generate_batch(
+            req.count, req.difficulty,
+            past_questions=req.past_questions,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail={"error": str(e), "code": "BEDROCK_KB_ERROR"})
     except Exception as e:
@@ -102,8 +114,12 @@ def quiz_evaluate(req: QuizEvaluateRequest, uid: str | None = Depends(optional_u
 def practice_generate(req: PracticeGenerateRequest, uid: str | None = Depends(optional_uid)):
     try:
         if req.count == 1:
-            return practice_engine.generate_practice_single(req.difficulty)
-        return practice_engine.generate_practice(req.count, req.difficulty)
+            return practice_engine.generate_practice_single(
+                req.difficulty, past_questions=req.past_questions,
+            )
+        return practice_engine.generate_practice(
+            req.count, req.difficulty, past_questions=req.past_questions,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail={"error": str(e), "code": "BEDROCK_KB_ERROR"})
     except Exception as e:
@@ -133,6 +149,8 @@ def practice_answer(req: PracticeAnswerRequest, uid: str | None = Depends(option
             "correct": req.correct,
             "is_correct": req.selected == req.correct,
             "difficulty": req.difficulty,
+            "choices": req.choices or {},
+            "explanation": req.explanation or "",
         })
     return {"status": "ok"}
 
@@ -164,6 +182,12 @@ async def s3_upload_file(file: UploadFile = File(...), uid: str | None = Depends
 
     try:
         result = s3_storage.upload_file(contents, file.filename or "unknown", file.content_type or "")
+        try:
+            sync_result = bedrock_kb.start_sync()
+            result["sync"] = sync_result
+        except Exception as sync_err:
+            logger.warning("Bedrock KB sync failed after upload: %s", sync_err)
+            result["sync"] = {"status": "error", "error": str(sync_err)}
         return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail={"error": str(e), "code": "S3_CONFIG_ERROR"})
@@ -186,7 +210,14 @@ def s3_status(uid: str | None = Depends(optional_uid)):
 def s3_delete_file(file_key: str, uid: str | None = Depends(optional_uid)):
     """S3 バケットからファイルを削除する。"""
     try:
-        return s3_storage.delete_file(file_key)
+        result = s3_storage.delete_file(file_key)
+        try:
+            sync_result = bedrock_kb.start_sync()
+            result["sync"] = sync_result
+        except Exception as sync_err:
+            logger.warning("Bedrock KB sync failed after delete: %s", sync_err)
+            result["sync"] = {"status": "error", "error": str(sync_err)}
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail={"error": str(e), "code": "S3_ERROR"})
 
@@ -199,7 +230,49 @@ def get_my_stats(uid: str | None = Depends(optional_uid)):
     try:
         return history.get_user_stats(uid)
     except Exception as e:
-        raise HTTPException(status_code=500, detail={"error": str(e), "code": "FIRESTORE_ERROR"})
+        raise HTTPException(status_code=500, detail={"error": str(e), "code": "DYNAMODB_ERROR"})
+
+
+@app.post("/api/chunks/preview")
+def chunks_preview(req: ChunksPreviewRequest, uid: str | None = Depends(optional_uid)):
+    """Bedrock KB から取得されるチャンクを確認用に返す。"""
+    try:
+        return bedrock_kb.preview_chunks(req.queries, k=req.k, max_items=req.max_items)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"error": str(e), "code": "BEDROCK_KB_ERROR"})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "code": "BEDROCK_ERROR"})
+
+
+@app.post("/api/chunks/export")
+def chunks_export(req: ChunksExportRequest, uid: str | None = Depends(optional_uid)):
+    """取得チャンクを backend/data/*.json に保存する。"""
+    try:
+        preview = bedrock_kb.preview_chunks(req.queries, k=req.k, max_items=req.max_items)
+        chunks = preview.get("chunks", [])
+        if not chunks:
+            raise ValueError("出力対象のチャンクがありません。")
+
+        default_name = f"retrieved_chunks_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+        raw_name = (req.filename or default_name).strip()
+        safe_name = re.sub(r"[^a-zA-Z0-9._-]", "_", raw_name)
+        if not safe_name.lower().endswith(".json"):
+            safe_name = f"{safe_name}.json"
+
+        out_path = DATA_DIR / safe_name
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(preview, f, ensure_ascii=False, indent=2)
+
+        return {
+            "status": "ok",
+            "count": len(chunks),
+            "file_name": safe_name,
+            "file_path": str(out_path),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail={"error": str(e), "code": "EXPORT_ERROR"})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": str(e), "code": "EXPORT_ERROR"})
 
 
 if __name__ == "__main__":

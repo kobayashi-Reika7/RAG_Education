@@ -1,0 +1,26 @@
+{
+  "count": 3,
+  "queries": [
+    "RAGとは何ですか"
+  ],
+  "chunks": [
+    {
+      "query": "RAGとは何ですか",
+      "uri": "s3://education-s3demo-973787/Q&AsampleData.txt",
+      "score": 0.8806397616863251,
+      "content": "RAG（Retrieval-Augmented Generation）基礎解説\r ■ RAGとは？\r \r RAG（検索拡張生成）とは、\r \r 「外部データを検索（Retrieval）してからLLMが回答生成（Generation）する仕組み」\r \r です。\r \r 通常のLLMは「学習済み知識のみ」で回答しますが、\r RAGは「検索した最新・社内・独自データ」を参照して回答できます。\r \r ■ なぜRAGが必要？\r \r LLM単体の課題：\r \r 学習データ以降の情報を知らない\r \r 社内文書・PDF・DBの内容は知らない\r \r ハルシネーション（もっともらしい誤答）が起こる\r \r RAGを使うと：\r \r ✅ 最新情報を反映\r ✅ 社内ナレッジ活用"
+    },
+    {
+      "query": "RAGとは何ですか",
+      "uri": "s3://education-s3demo-973787/RAGdata.md",
+      "score": 0.8277603983879089,
+      "content": "CAG CAG ( Cache-Augmented Generation )とは その他 まとめ 参考文献 RAG の概要 RAG とはRetrieval-Augmented Generationの略で、情報検索と生成を組み合わせた手法です。 RAG は特に大規模言語モデル(LLM)と組み合わせることで、その性能を大幅に向上させることができます。 歴史的にはMeta の研究者が提案した、LLM のハルシネーション（誤情報生成）を低減する手法で、LLM だけの思考ではなく、外部リソースに検索をかけながら正しい答えを生成する言わば 「ナレッジベースの外部化」 が実現出来る手法です。"
+    },
+    {
+      "query": "RAGとは何ですか",
+      "uri": "s3://education-s3demo-973787/RAGdata.md",
+      "score": 0.8248224258422852,
+      "content": "一貫性 (Consistency) 関連性 (Relevance) 流暢さ (Fluency) カバレッジ (Coverage) 多様性 (Diversity) 詳細度 (Detail) など 上記のような観点から、RAG の精度を評価することができます。 RAG と Fine-Tuning よく聞かれる質問に RAG と Fine-Tuning の違いがあります。 RAG (Retrieval-Augmented Generation) と Fine-Tuning は、どちらも LLM の精度を向上させるための手法ですが、アプローチが異なります。 RAG は、外部の知識ベースやドキュメントを活用して、生成する回答の精度を向上させる手法です。具体的には、以下のような特徴があります。 外部知識の活用: RAG は、事前に用意されたドキュメントや知識ベースから情報を取得し、それを基に回答を生成します。"
+    }
+  ]
+}

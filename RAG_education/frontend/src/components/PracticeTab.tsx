@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { api, type PracticeResponse } from '../lib/api';
 
 type Phase = 'setup' | 'loading' | 'answering' | 'result';
@@ -51,12 +51,15 @@ export default function PracticeTab() {
   const [stats, setStats] = useState({ total: 0, correct: 0 });
   const [nextProblem, setNextProblem] = useState<PracticeResponse | null>(null);
   const [prefetching, setPrefetching] = useState(false);
+  const [pastQuestions, setPastQuestions] = useState<string[]>([]);
+  const pastRef = useRef<string[]>([]);
+  pastRef.current = pastQuestions;
 
   const prefetch = async () => {
     if (prefetching) return;
     setPrefetching(true);
     try {
-      const res = await api.generatePractice(difficulty);
+      const res = await api.generatePractice(difficulty, pastRef.current);
       setNextProblem(res);
     } catch {
       setNextProblem(null);
@@ -65,21 +68,30 @@ export default function PracticeTab() {
     }
   };
 
+  const isDuplicate = (q: string) => {
+    if (!q) return false;
+    const prefix = q.slice(0, 30);
+    return pastRef.current.some((p) => p === q || p.startsWith(prefix));
+  };
+
   const generate = async () => {
     setPhase('loading');
     setError('');
     setSelected(null);
 
-    if (nextProblem) {
+    if (nextProblem && !isDuplicate(nextProblem.question)) {
       setProblem(nextProblem);
+      setPastQuestions((prev) => [...prev, nextProblem.question]);
       setNextProblem(null);
       setPhase('answering');
       return;
     }
+    setNextProblem(null);
 
     try {
-      const res = await api.generatePractice(difficulty);
+      const res = await api.generatePractice(difficulty, pastRef.current);
       setProblem(res);
+      setPastQuestions((prev) => [...prev, res.question]);
       setPhase('answering');
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '問題の生成に失敗しました');
@@ -103,6 +115,8 @@ export default function PracticeTab() {
       selected: choice,
       correct: problem.correct,
       difficulty,
+      choices: problem.choices,
+      explanation: problem.explanation,
     }).catch(() => {});
 
     prefetch();

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { api, type QuizResponse } from '../lib/api';
 
 const TOTAL_QUESTIONS = 5;
@@ -51,6 +51,9 @@ export default function QuizTab() {
   const [selectedAnswer, setSelectedAnswer] = useState<OxAnswer | null>(null);
   const [records, setRecords] = useState<QuizRecord[]>([]);
   const [error, setError] = useState('');
+  const [pastQuestions, setPastQuestions] = useState<string[]>([]);
+  const pastRef = useRef<string[]>([]);
+  pastRef.current = pastQuestions;
 
   const quiz = quizzes[currentIndex] ?? null;
 
@@ -62,8 +65,9 @@ export default function QuizTab() {
     setCurrentIndex(0);
     setQuizzes([]);
     try {
-      const batch = await api.generateQuizBatch(difficulty, TOTAL_QUESTIONS);
+      const batch = await api.generateQuizBatch(difficulty, TOTAL_QUESTIONS, pastRef.current);
       setQuizzes(batch);
+      setPastQuestions((prev) => [...prev, ...batch.map((q) => q.question)]);
       setPhase('question');
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'クイズ生成に失敗しました');

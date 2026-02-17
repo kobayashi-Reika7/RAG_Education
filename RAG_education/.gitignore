@@ -27,6 +27,8 @@ deploy/lambda-env.json
 
 # Generated embeddings (large file)
 backend/data/embeddings.json
+backend/data/rag_ai_manual_chunks.json
+firestore.rules
 
 # OS
 .DS_Store
