@@ -53,6 +53,7 @@ export default function PracticeTab() {
   const [prefetching, setPrefetching] = useState(false);
   const [pastQuestions, setPastQuestions] = useState<string[]>([]);
   const pastRef = useRef<string[]>([]);
+  const requestSeqRef = useRef(0);
   pastRef.current = pastQuestions;
 
   const prefetch = async () => {
@@ -75,11 +76,13 @@ export default function PracticeTab() {
   };
 
   const generate = async () => {
+    const requestSeq = ++requestSeqRef.current;
     setPhase('loading');
     setError('');
     setSelected(null);
 
     if (nextProblem && !isDuplicate(nextProblem.question)) {
+      if (requestSeq !== requestSeqRef.current) return;
       setProblem(nextProblem);
       setPastQuestions((prev) => [...prev, nextProblem.question]);
       setNextProblem(null);
@@ -90,10 +93,12 @@ export default function PracticeTab() {
 
     try {
       const res = await api.generatePractice(difficulty, pastRef.current);
+      if (requestSeq !== requestSeqRef.current) return;
       setProblem(res);
       setPastQuestions((prev) => [...prev, res.question]);
       setPhase('answering');
     } catch (e: unknown) {
+      if (requestSeq !== requestSeqRef.current) return;
       setError(e instanceof Error ? e.message : '問題の生成に失敗しました');
       setPhase('setup');
     }
@@ -127,6 +132,8 @@ export default function PracticeTab() {
   };
 
   const reset = () => {
+    // 進行中の問題生成レスポンスを無効化する
+    requestSeqRef.current += 1;
     setPhase('setup');
     setProblem(null);
     setSelected(null);
@@ -240,6 +247,14 @@ export default function PracticeTab() {
             <div className="spinner mx-auto mb-6" style={{ borderTopColor: '#14b8a6' }} />
             <p className="text-sm font-medium text-gray-500">問題を作成中...</p>
             <p className="text-xs text-gray-400 mt-1">少々お待ちください</p>
+            <div className="mt-5">
+              <button
+                onClick={reset}
+                className="px-6 py-2.5 rounded-2xl text-sm font-medium text-gray-500 bg-white border border-gray-200 hover:bg-gray-50 hover:border-gray-300 transition-all duration-200 btn-press"
+              >
+                終了
+              </button>
+            </div>
           </div>
         )}
 
@@ -270,6 +285,12 @@ export default function PracticeTab() {
                   </div>
                 </div>
               )}
+              <button
+                onClick={reset}
+                className="px-4 py-2 rounded-xl text-xs font-medium text-gray-500 bg-white border border-gray-200 hover:bg-gray-50 hover:border-gray-300 transition-all duration-200 btn-press"
+              >
+                終了
+              </button>
             </div>
 
             {/* Question card */}

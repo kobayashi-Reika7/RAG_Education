@@ -24,6 +24,8 @@ from src.auth import optional_uid
 from src import history
 
 logger = logging.getLogger(__name__)
+CONSISTENCY_ERROR_TEXT = "整合性チェックに失敗しました"
+GENERATION_RETRY_COUNT = 1
 
 app = FastAPI(title="RAG Education API", version="1.0.0")
 
@@ -33,6 +35,29 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
+
+
+def _retry_generation(func):
+    """整合性チェック失敗時のみ、問題生成を再試行する。"""
+    last_error: ValueError | None = None
+    for attempt in range(GENERATION_RETRY_COUNT + 1):
+        try:
+            return func()
+        except ValueError as e:
+            last_error = e
+            message = str(e)
+            should_retry = CONSISTENCY_ERROR_TEXT in message and attempt < GENERATION_RETRY_COUNT
+            if not should_retry:
+                raise
+            logger.warning(
+                "Generation consistency retry %d/%d: %s",
+                attempt + 1,
+                GENERATION_RETRY_COUNT + 1,
+                message,
+            )
+    if last_error is not None:
+        raise last_error
+    raise ValueError("問題生成に失敗しました")
 
 
 # --- エンドポイント ---
@@ -67,10 +92,12 @@ def ask_bedrock(req: AskRequest, uid: str | None = Depends(optional_uid)):
 @app.post("/api/quiz/generate")
 def quiz_generate(req: QuizGenerateRequest, uid: str | None = Depends(optional_uid)):
     try:
-        return quiz_engine.generate(
-            req.difficulty,
-            exclude_chunk_ids=req.exclude_chunk_ids,
-            past_questions=req.past_questions,
+        return _retry_generation(
+            lambda: quiz_engine.generate(
+                req.difficulty,
+                exclude_chunk_ids=req.exclude_chunk_ids,
+                past_questions=req.past_questions,
+            )
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail={"error": str(e), "code": "BEDROCK_KB_ERROR"})
@@ -82,9 +109,11 @@ def quiz_generate(req: QuizGenerateRequest, uid: str | None = Depends(optional_u
 def quiz_generate_batch(req: QuizBatchRequest, uid: str | None = Depends(optional_uid)):
     """5問まとめて1回のLLM呼出しで生成する（高速）。"""
     try:
-        return quiz_engine.generate_batch(
-            req.count, req.difficulty,
-            past_questions=req.past_questions,
+        return _retry_generation(
+            lambda: quiz_engine.generate_batch(
+                req.count, req.difficulty,
+                past_questions=req.past_questions,
+            )
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail={"error": str(e), "code": "BEDROCK_KB_ERROR"})
@@ -114,11 +143,15 @@ def quiz_evaluate(req: QuizEvaluateRequest, uid: str | None = Depends(optional_u
 def practice_generate(req: PracticeGenerateRequest, uid: str | None = Depends(optional_uid)):
     try:
         if req.count == 1:
-            return practice_engine.generate_practice_single(
-                req.difficulty, past_questions=req.past_questions,
+            return _retry_generation(
+                lambda: practice_engine.generate_practice_single(
+                    req.difficulty, past_questions=req.past_questions,
+                )
             )
-        return practice_engine.generate_practice(
-            req.count, req.difficulty, past_questions=req.past_questions,
+        return _retry_generation(
+            lambda: practice_engine.generate_practice(
+                req.count, req.difficulty, past_questions=req.past_questions,
+            )
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail={"error": str(e), "code": "BEDROCK_KB_ERROR"})

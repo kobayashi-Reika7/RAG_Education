@@ -2,6 +2,13 @@ import { fetchAuthSession } from 'aws-amplify/auth';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '';
 const BASE = `${API_BASE}/api`;
+const CONSISTENCY_ERROR_TEXT = '整合性チェックに失敗しました';
+
+function normalizeQuestionText(text: string): string {
+  return text
+    .replace(/^\s*(?:問題|問|Q(?:uestion)?)(?:\s*\d+)?\s*[:：]\s*/i, '')
+    .trim();
+}
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -29,6 +36,26 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     throw new Error(err.detail?.error || err.detail || 'API Error');
   }
   return res.json();
+}
+
+async function withConsistencyRetry<T>(
+  factory: () => Promise<T>,
+  maxRetries: number = 1
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    try {
+      return await factory();
+    } catch (e: unknown) {
+      lastError = e;
+      const message = e instanceof Error ? e.message : String(e);
+      const isConsistencyError = message.includes(CONSISTENCY_ERROR_TEXT);
+      if (!isConsistencyError || attempt >= maxRetries) {
+        throw e;
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('問題生成に失敗しました');
 }
 
 export interface AskResponse {
@@ -139,10 +166,24 @@ export const api = {
   askBedrock: (question: string) => post<AskResponse>('/ask/bedrock', { question }),
 
   generateQuiz: (difficulty: string, excludeChunkIds?: string[], pastQuestions?: string[]) =>
-    post<QuizResponse>('/quiz/generate', { difficulty, exclude_chunk_ids: excludeChunkIds || [], past_questions: pastQuestions || [] }),
+    withConsistencyRetry(() =>
+      post<QuizResponse>('/quiz/generate', {
+        difficulty,
+        exclude_chunk_ids: excludeChunkIds || [],
+        past_questions: pastQuestions || [],
+      }).then((res) => ({ ...res, question: normalizeQuestionText(res.question || '') }))
+    ),
 
   generateQuizBatch: (difficulty: string, count: number = 5, pastQuestions?: string[]) =>
-    post<QuizResponse[]>('/quiz/generate-batch', { difficulty, count, past_questions: pastQuestions || [] }),
+    withConsistencyRetry(() =>
+      post<QuizResponse[]>('/quiz/generate-batch', {
+        difficulty,
+        count,
+        past_questions: pastQuestions || [],
+      }).then((rows) =>
+        rows.map((row) => ({ ...row, question: normalizeQuestionText(row.question || '') }))
+      )
+    ),
 
   evaluateQuiz: (params: {
     quiz_id: string;
@@ -153,7 +194,13 @@ export const api = {
   }) => post<EvalResponse>('/quiz/evaluate', params),
 
   generatePractice: (difficulty: string = 'beginner', pastQuestions?: string[]) =>
-    post<PracticeResponse>('/practice/generate', { count: 1, difficulty, past_questions: pastQuestions || [] }),
+    withConsistencyRetry(() =>
+      post<PracticeResponse>('/practice/generate', {
+        count: 1,
+        difficulty,
+        past_questions: pastQuestions || [],
+      }).then((res) => ({ ...res, question: normalizeQuestionText(res.question || '') }))
+    ),
 
   saveQuizResult: (params: {
     quiz_id: string;

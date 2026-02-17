@@ -11,7 +11,7 @@ from src.bedrock_kb import get_contents_for_quiz
 
 logger = logging.getLogger(__name__)
 
-MAX_DEDUP_RETRIES = 3
+MAX_DEDUP_RETRIES = 1
 
 DIFFICULTY_MAP = {
     "beginner": (

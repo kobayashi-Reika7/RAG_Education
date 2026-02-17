@@ -10,7 +10,7 @@ from src.config import load_prompt
 from src.bedrock_kb import get_contents_for_quiz
 
 logger = logging.getLogger(__name__)
-MAX_PARSE_RETRIES = 3
+MAX_PARSE_RETRIES = 1
 
 DIFFICULTY_MAP = {
     "beginner": (
@@ -57,6 +57,33 @@ def _is_valid_quiz(q: dict) -> bool:
     return bool(question) and expected in {"○", "×"} and bool(explanation)
 
 
+def _pick_balanced_questions(questions: list[dict], count: int) -> list[dict]:
+    """○/× の比率が偏らないように問題を抽出する。"""
+    if count <= 0:
+        return []
+
+    true_items = [q for q in questions if (q.get("expected_answer") or "").strip() == "○"]
+    false_items = [q for q in questions if (q.get("expected_answer") or "").strip() == "×"]
+
+    target_true = count // 2
+    target_false = count // 2
+    if count % 2 == 1:
+        # 奇数問のときは、どちらかを +1（偏りを固定しない）
+        if random.random() < 0.5:
+            target_true += 1
+        else:
+            target_false += 1
+
+    if len(true_items) < target_true or len(false_items) < target_false:
+        return []
+
+    random.shuffle(true_items)
+    random.shuffle(false_items)
+    selected = true_items[:target_true] + false_items[:target_false]
+    random.shuffle(selected)
+    return selected
+
+
 def generate_batch(
     count: int = 5,
     difficulty: str = "beginner",
@@ -100,7 +127,7 @@ def generate_batch(
             seen.add(qtext)
             deduped.append(q)
 
-        questions = deduped
+        questions = _pick_balanced_questions(deduped, count)
         if len(questions) >= count:
             break
         logger.info("Quiz batch parse/dedup incomplete (attempt %d/%d): %d/%d",

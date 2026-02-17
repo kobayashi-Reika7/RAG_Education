@@ -183,9 +183,6 @@ export default function DashboardTab() {
 function StatCard({ label, value, unit, gradient }: { label: string; value: number; unit: string; gradient: string }) {
   return (
     <div className="bg-white rounded-2xl border border-gray-100 p-5 shadow-sm card-hover">
-      <div className={`w-10 h-10 rounded-xl bg-gradient-to-br ${gradient} flex items-center justify-center mb-3 shadow-md`}>
-        <span className="text-white text-[15px] font-black">{value}</span>
-      </div>
       <p className="text-2xl font-black text-gray-900">
         {value}<span className="text-sm font-semibold text-gray-400 ml-0.5">{unit}</span>
       </p>
