@@ -53,7 +53,7 @@ git branch && git checkout ai-generated 2>/dev/null || git checkout -b ai-genera
 - 不明点は質問する
 
 ### ✅ 必ずやること（最重要）
-
+**ログの記録とGit運用は毎回欠かさず行う。**
 #### 🚨 作業前：Gitブランチ切り替え
 **どんな作業でも、最初に必ず以下を実行：**
 ```bash
