@@ -64,6 +64,19 @@ export interface AskResponse {
   response_time_ms: number;
 }
 
+export interface ChunkPreviewItem {
+  query: string;
+  uri: string;
+  score: number;
+  content: string;
+}
+
+export interface ChunkPreviewResponse {
+  count: number;
+  queries: string[];
+  chunks: ChunkPreviewItem[];
+}
+
 export interface QuizResponse {
   quiz_id: string;
   difficulty: string;
@@ -163,7 +176,29 @@ export interface S3StatusResponse {
 }
 
 export const api = {
-  askBedrock: (question: string) => post<AskResponse>('/ask/bedrock', { question }),
+  askBedrock: (question: string) =>
+    post<AskResponse>('/ask/bedrock', { question }).then((res) => {
+      const sources = res.sources || [];
+      if (sources.length > 0) return res;
+      const encoded = encodeURIComponent(question);
+      return {
+        ...res,
+        sources: [
+          {
+            chunk_id: 'external',
+            section: '外部ソース (Google)',
+            content: `S3ソースに該当情報がないため、外部検索結果を参照してください: ${question}`,
+            uri: `https://www.google.com/search?q=${encoded}`,
+          },
+          {
+            chunk_id: 'external',
+            section: '外部ソース (DuckDuckGo)',
+            content: `S3ソースに該当情報がないため、外部検索結果を参照してください: ${question}`,
+            uri: `https://duckduckgo.com/?q=${encoded}`,
+          },
+        ],
+      };
+    }),
 
   generateQuiz: (difficulty: string, excludeChunkIds?: string[], pastQuestions?: string[]) =>
     withConsistencyRetry(() =>
@@ -270,4 +305,11 @@ export const api = {
       throw new Error(err.detail?.error || err.detail || 'S3 Delete Error');
     }
   },
+
+  chunksPreview: (queries: string[], k: number = 5, maxItems: number = 10) =>
+    post<ChunkPreviewResponse>('/chunks/preview', {
+      queries,
+      k,
+      max_items: maxItems,
+    }),
 };

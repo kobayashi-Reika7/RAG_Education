@@ -3,13 +3,16 @@ import os
 import time
 import random
 import logging
+from urllib.parse import quote_plus
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import boto3
 
 from src.config import BEDROCK_KB_ID, BEDROCK_MODEL_ARN, S3_REGION
+from src import s3_storage
 
 logger = logging.getLogger(__name__)
+MIN_SOURCE_SCORE = 0.65
 
 BEDROCK_DS_ID = os.getenv("BEDROCK_DS_ID", "")
 
@@ -61,6 +64,28 @@ def start_sync() -> dict:
     }
 
 
+_NO_INFO_MARKER = "該当する情報がありません"
+
+
+def _build_external_sources(question: str) -> list[dict]:
+    """外部検索リンクを生成するヘルパー。"""
+    q = quote_plus(question)
+    return [
+        {
+            "chunk_id": "external",
+            "section": "外部ソース (Google)",
+            "content": f"内部データに該当情報がないため、外部検索結果を参照してください: {question}",
+            "uri": f"https://www.google.com/search?q={q}",
+        },
+        {
+            "chunk_id": "external",
+            "section": "外部ソース (DuckDuckGo)",
+            "content": f"内部データに該当情報がないため、外部検索結果を参照してください: {question}",
+            "uri": f"https://duckduckgo.com/?q={q}",
+        },
+    ]
+
+
 def ask(question: str) -> dict:
     """Bedrock Knowledge Bases に問い合わせて RAG 回答を取得する。"""
     start = time.time()
@@ -76,7 +101,10 @@ def ask(question: str) -> dict:
                 "generationConfiguration": {
                     "promptTemplate": {
                         "textPromptTemplate": (
-                            "日本語で100文字以内に要約して回答せよ。英語禁止。\n"
+                            "あなたはRAG学習アプリの質問応答AIです。\n"
+                            "検索結果に質問と関連する情報がある場合のみ、日本語で100文字以内に要約して回答してください。\n"
+                            "検索結果に質問と関連する情報が全くない場合は、必ず「該当する情報がありません」とだけ回答してください。\n"
+                            "絶対に検索結果にない情報を捏造しないでください。英語禁止。\n"
                             "検索結果:$search_results$\n"
                             "質問:$query$"
                         ),
@@ -97,8 +125,31 @@ def ask(question: str) -> dict:
     if answer.startswith("日本語での回答:"):
         answer = answer[len("日本語での回答:"):].strip()
 
+    # retrieve で関連度スコアを確認し、内部データに該当があるか判定
+    top_score = 0.0
+    s3_sources: list[dict] = []
+    seen_sources: set[tuple[str, str]] = set()
+
+    def _append_s3_source(uri: str, content_text: str):
+        content = (content_text or "").strip()
+        source_uri = (uri or "").strip()
+        if not source_uri.startswith("s3://"):
+            return
+        if not content:
+            return
+        key = (source_uri, content)
+        if key in seen_sources:
+            return
+        seen_sources.add(key)
+        s3_sources.append({
+            "chunk_id": "",
+            "section": source_uri.split("/")[-1] if source_uri else "Bedrock KB",
+            "content": content[:200],
+            "uri": source_uri,
+        })
+
+    # citations からソースを抽出
     citations = response.get("citations", [])
-    sources = []
     for citation in citations:
         for ref in citation.get("retrievedReferences", []):
             content_text = ref.get("content", {}).get("text", "")
@@ -106,18 +157,47 @@ def ask(question: str) -> dict:
             s3_uri = ""
             if location.get("type") == "S3":
                 s3_uri = location.get("s3Location", {}).get("uri", "")
+            _append_s3_source(s3_uri, content_text)
 
-            sources.append({
-                "chunk_id": "",
-                "section": s3_uri.split("/")[-1] if s3_uri else "Bedrock KB",
-                "content": content_text[:200],
-                "uri": s3_uri,
-            })
+    # retrieve で関連度スコアを取得しソースを補完
+    try:
+        retrieved = retrieve(question, k=5).get("results", [])
+        for item in retrieved:
+            score = float(item.get("score", 0.0) or 0.0)
+            top_score = max(top_score, score)
+            if score < MIN_SOURCE_SCORE:
+                continue
+            _append_s3_source(item.get("uri", ""), item.get("content", ""))
+    except Exception as e:
+        logger.warning("retrieve merge for sources failed: %s", e)
+
+    # 内部データに該当がない場合の判定:
+    # 1) LLM が「該当する情報がありません」と回答した
+    # 2) retrieve の最高スコアが閾値未満（無関係な質問）
+    no_internal_data = (
+        _NO_INFO_MARKER in answer
+        or top_score < MIN_SOURCE_SCORE
+        or not s3_sources
+    )
+
+    if no_internal_data:
+        answer_text = (
+            answer if _NO_INFO_MARKER in answer
+            else f"内部データに該当する情報が見つかりませんでした。外部検索をご利用ください。"
+        )
+        sources = _build_external_sources(question)
+    else:
+        answer_text = answer
+        sources = s3_sources
+
+    # 最終ガード: ソースが空にならないようにする
+    if not sources:
+        sources = _build_external_sources(question)
 
     elapsed = int((time.time() - start) * 1000)
 
     return {
-        "answer": answer,
+        "answer": answer_text,
         "sources": sources,
         "response_time_ms": elapsed,
     }

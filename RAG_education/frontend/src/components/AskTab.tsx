@@ -37,12 +37,48 @@ export default function AskTab() {
 
     try {
       const res = await api.askBedrock(q);
+      let sources = res.sources || [];
+      if (sources.length === 0) {
+        try {
+          const preview = await api.chunksPreview([q], 5, 10);
+          const chunkSources = (preview.chunks || [])
+            .filter((c) => (c.uri || '').startsWith('s3://'))
+            .map((c) => ({
+              chunk_id: '',
+              section: (c.uri || '').split('/').pop() || 'S3 source',
+              content: c.content || '',
+              uri: c.uri || '',
+            }));
+          if (chunkSources.length > 0) {
+            sources = chunkSources;
+          }
+        } catch {
+          // preview取得失敗時は外部ソースへフォールバック
+        }
+      }
+      if (sources.length === 0) {
+        const encoded = encodeURIComponent(q);
+        sources = [
+          {
+            chunk_id: 'external',
+            section: '外部ソース (Google)',
+            content: `S3ソースに該当情報がないため、外部検索結果を参照してください: ${q}`,
+            uri: `https://www.google.com/search?q=${encoded}`,
+          },
+          {
+            chunk_id: 'external',
+            section: '外部ソース (DuckDuckGo)',
+            content: `S3ソースに該当情報がないため、外部検索結果を参照してください: ${q}`,
+            uri: `https://duckduckgo.com/?q=${encoded}`,
+          },
+        ];
+      }
       setMessages((prev) => [
         ...prev,
         {
           role: 'assistant',
           content: res.answer,
-          sources: res.sources,
+          sources,
           time_ms: res.response_time_ms,
         },
       ]);
@@ -127,12 +163,12 @@ export default function AskTab() {
                   <div className="mt-3 pt-3 border-t border-gray-100">
                     <button
                       onClick={() => setExpandedSource(expandedSource === i ? null : i)}
-                      className="flex items-center gap-1.5 text-[11px] font-medium text-gray-400 hover:text-orange-500 transition-colors"
+                      className="flex items-center gap-1.5 text-[11px] font-semibold text-gray-500 hover:text-orange-500 transition-colors"
                     >
                       <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
                       </svg>
-                      参照 ({msg.sources.length})
+                      ソース ({msg.sources.length})
                       <svg
                         className={`w-3 h-3 transition-transform duration-200 ${expandedSource === i ? 'rotate-180' : ''}`}
                         fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
@@ -140,7 +176,6 @@ export default function AskTab() {
                         <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
                       </svg>
                     </button>
-
                     {expandedSource === i && (
                       <div className="mt-2 space-y-1.5 scale-in">
                         {msg.sources.map((s, j) => (
@@ -151,12 +186,27 @@ export default function AskTab() {
                             <div className="flex items-center gap-1.5 mb-1">
                               <span className="inline-block w-1.5 h-1.5 rounded-full bg-orange-400" />
                               <span className="text-[11px] font-semibold text-orange-600">
-                                {s.section || s.chunk_id}
+                                {s.section || s.chunk_id || 'source'}
                               </span>
+                              {s.chunk_id === 'external' && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 border border-blue-100">
+                                  外部
+                                </span>
+                              )}
                             </div>
                             <p className="text-[11px] text-gray-500 leading-relaxed line-clamp-3">
                               {s.content}
                             </p>
+                            {s.uri && (
+                              <a
+                                href={s.uri}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="block text-[10px] text-blue-500 mt-1 truncate hover:underline"
+                              >
+                                {s.uri}
+                              </a>
+                            )}
                           </div>
                         ))}
                       </div>
